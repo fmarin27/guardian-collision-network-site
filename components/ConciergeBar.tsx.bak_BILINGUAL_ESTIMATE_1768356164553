@@ -1,0 +1,3185 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+
+
+import { useLang } from "../context/LangContext";
+type Message = {
+  from: "bot" | "user";
+  text: string;
+};
+
+type Intent = "estimate" | "accident" | "insurance" | "other";
+
+/** What opened Concierge PLUS (so we can route to different flows) */
+type ConciergeMode = "default" | "forms";
+
+type FormsClaimType = "out_of_pocket" | "insurance";
+type FormsDeliveryChoice = null | "fill" | "download";
+
+type Step =
+  | "help"
+  | "name"
+  // accident branch
+  | "accident_safeToDrive"
+  | "accident_needTowNow"
+  | "accident_towUnsureConnect"
+  | "accident_exchangedInfo"
+  | "accident_policeReport"
+  | "accident_photosTaken"
+  | "accident_fullCoverage"
+  | "accident_contactedInsurance"
+  | "accident_shopRep"
+  // estimate branch
+  | "estimate_haveVin"
+  | "estimate_vinValue"
+  | "estimate_havePhotos"
+  | "estimate_damageHow"
+  | "estimate_upload"
+  // forms branch
+  | "forms_claimType"
+  | "forms_delivery"
+  | "forms_auth" // Repair Authorization web form
+  | "forms_pdf" // remaining fillable PDFs (insurance)
+  | "forms_notes"
+  | "forms_complete"
+  // common
+  | "callback_number"
+  | "done";
+
+type ConciergeOpenEventDetail = {
+  mode?: ConciergeMode;
+  /** Optional: jump directly into a specific flow (e.g., Estimate Tool button) */
+  intent?: Intent;
+};
+
+type AuthFormData = {
+  fullName: string;
+  address: string;
+  townCity: string;
+  zip: string;
+  phone: string;
+  email: string;
+  year: string;
+  make: string;
+  model: string;
+  plate: string;
+  agree: boolean;
+  signatureDataUrl: string; // PNG data url
+};
+
+type DirectionToPayFormData = {
+  date: string;
+  fullName: string;
+  insurerName: string;
+  claimNumber: string;
+  year: string;
+  make: string;
+  model: string;
+  agree: boolean;
+};
+
+type DesignatedRepFormData = {
+  date: string;
+  fullName: string;
+  insurerName: string;
+  claimNumber: string;
+  year: string;
+  make: string;
+  model: string;
+  plate: string;
+  agree: boolean;
+};
+
+type EstimateDismantleFormData = {
+  date: string;
+  fullName: string;
+  year: string;
+  make: string;
+  model: string;
+  plate: string;
+  agree: boolean;
+  notRepairAgree: boolean;
+};
+
+type InsuranceFormKey = "direction_to_pay" | "designated_representative" | "estimate_dismantling";
+
+type SavedChatState = {
+  mode: ConciergeMode;
+  intent: Intent;
+  step: Step;
+  messages: Message[];
+
+  customerName: string;
+  helpSummary: string;
+
+  haveVin: "yes" | "no" | "maybe" | "unknown";
+  vinValue: string;
+  havePhotos: "yes" | "no" | "maybe" | "unknown";
+
+  formsClaimType: FormsClaimType | null;
+  formsDeliveryChoice: FormsDeliveryChoice;
+  formsPdfIndex: number;
+
+  authForm: AuthFormData;
+  dtpForm: DirectionToPayFormData;
+  drForm: DesignatedRepFormData;
+  estForm: EstimateDismantleFormData;
+  insuranceExplained: Record<InsuranceFormKey, boolean>;
+  authExplained: boolean;
+
+  extraNotes: string[];
+  callbackNumber: string;
+
+  uploads: File[];
+  lastFilePickSig: string;
+
+  notified: boolean;
+  sessionId: string;
+};
+
+// =======================
+// ✅ PDF FILE PATHS
+// =======================
+const AUTH_FORM_PDF_URL = "/forms/authorization-form.pdf";
+const INSURANCE_FORMS = [
+  {
+    key: "direction_to_pay",
+    title: "Direction to Pay",
+    kind: "direction_to_pay",
+    blankUrl: "/forms/fillable/UAB-Direction-to-Pay-Fillable.pdf",
+    plain: "Tells your insurance company to pay Ultimate Auto Body directly for approved repair charges.",
+    official: `DIRECTION TO PAY TAX I.D# 46-2261821
+Date: _________________________
+To Whom It May Concern:
+Please be advised that I, _________________________________ do hereby authorize
+_________________________________ to pay directly to UAB, Inc (dba: Ultimate
+AutoBody) any invoice and/or supplement charges for repairs to my
+Yr/Make/Model: ______________________________________________
+Claim # ______________________________________________
+Ultimate Autobody Tax I.D.# 46-2261821
+Power of Attorney -
+I do hereby appoint the aforementioned business as my attorney in fact to accept and endorse on my
+behalf any and all checks, drafts, or bills of exchange for deposit to the aforementioned business’
+account for credit on my account for repairs on my vehicle which has been released and accepted.
+Accepted By: ___________________________________ Date: ____________
+Important Notice:
+Any checks received by a claimant for repairs completed must be turned over to the auto body shop
+named here in immediately. Any attempt to withhold payment after signing this document will result in
+legal liability.
+UABXVILLE Inc. DBA UIltimate Auto Body 304 E Third St Mount Vernon NY 10553 (914) 667-8000
+Fax (914) 667-8020`,
+  },
+  {
+    key: "designated_representative",
+    title: "Designated Representative",
+    kind: "designated_representative",
+    blankUrl: "/forms/fillable/UAB-Designated-Representative-Fillable.pdf",
+    plain: "Lets Ultimate Auto Body speak to your insurance company and handle claim communications on your behalf.",
+    official: `Ultimate Auto Body
+304 E Third Street
+Mount Vernon, NY 10553
+914-667-8000
+Fax 914-667-8020
+Shop Registration # 7125804 Tax ID# 46-2261821
+DESIGNATED REPRESENTATIVE FORM
+NAME: ____________________________________
+INSURANCE COMPANY:______________________
+CLAIM#:___________________________________
+VEHICLE:___________________________________
+I hereby appoint any and all officers of Ultimate Auto Body (UAB, Inc.) as my Designated
+Representatives as provided by Regulation 64 of the New York State Insurance Department to
+act on my behalf in all matters regarding the above claim. This includes and is not limited to
+negotiating to settle the claim, discuss liability decisions, and receive or send any
+correspondences regarding the claim.
+Owner:__________________________________ Date:______________`,
+  },
+  {
+    key: "estimate_dismantling",
+    title: "Authorization for Estimate & Dismantling",
+    kind: "estimate_dismantling",
+    blankUrl: "/forms/fillable/UAB-Authorization-Estimate-Dismantling-Fillable.pdf",
+    plain: "Authorizes us to estimate and, if needed, remove parts to properly evaluate damage — it does not authorize repairs.",
+    official: `Ultimate Auto Body 304 E Third St Mount Vernon, NY 10553 P. 914-667-8000 F.914-667-8020
+Repair Facility # 7125804
+AUTHORIZATION FOR ESTIMATE AND
+DISMANTLING
+authorize Ultimate Auto Body, UAB, Inc to
+prepare an estimate of repair costs and if necessary dismantle parts of my vehicle to
+do so. I understand that this is not an authorization to repair and is only for
+evaluating damages for myself or the insurance company covering the cost of
+repair.
+Owner/Representatives Signature Date
+Vehicle Year Make Model _PIate#
+Ultimate Auto Body, UAB, Inc will not be held responsible for items left in any vehicle either
+towed or driven in for estimating or repairing. Any labor involved in dismantling or estimating
+must be paid before vehicle is moved from Ultimate Auto Body premises. Vehicles towed or driven
+in, then deemed a total loss, or moved to another location for any reason by customer or Insurance
+Company may be subject to admin, lot, debris cleanup charges or estimate fees. Any labor, towing
+or lift inspection fees must be paid before a vehicle leaves Ultimate Auto Body, UAB, Inc. In case
+of a total loss Ultimate Auto Body, UAB, Inc will itemize any applicable charges and submit them
+to your insurance company for payment on your behalf.
+Outside Storage $75 Inside Storage $95 Per Day
+Ultimate Auto Body, 304 E Third Street Mount Vernon, NY 10553
+UABXVILLE INC.
+DBA: Ultimate Auto Body`,
+  },
+] as const;
+
+const INSURANCE_PACKET_BLANK_URL = "/forms/fillable/UAB-Forms-Packet-All-4-Fillable.pdf";
+
+function makeSessionId() {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `sess_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizePhone(text: string) {
+  return text.replace(/\D/g, "");
+}
+
+function formatPhone(digits: string) {
+  if (digits.length === 10) return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  if (digits.length === 11 && digits.startsWith("1")) {
+    const d = digits.slice(1);
+    return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+  }
+  return digits;
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function slugifyFileName(s: string) {
+  return s
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+}
+
+function yyyyMmDd(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+export default function ConciergeBar() {
+  const { lang, tr } = useLang();
+  const [open, setOpen] = useState(false);
+
+  // Mode routing
+  const [mode, setMode] = useState<ConciergeMode>("default");
+
+  // Branch + step
+  const [intent, setIntent] = useState<Intent>("other");
+  const [step, setStep] = useState<Step>("help");
+
+  // --- Language switching (mid-conversation) ---
+  const prevLangRef = useRef<Lang>(lang);
+
+  const promptForStep = useCallback(
+    (s: Step) => {
+      switch (s) {
+        case "help":
+          return tr(
+            "Hey! 👋 How can we help you today?",
+            "¡Hola! 👋 ¿Cómo podemos ayudarte hoy?"
+          );
+        case "estimate_haveVin":
+          return tr(
+            "Do you have the VIN? (Typing it or a photo works.)",
+            "¿Tienes el VIN? (Puedes escribirlo o subir una foto.)"
+          );
+        case "estimate_havePhotos":
+          return tr(
+            "Do you have photos of the damage you can share?",
+            "¿Tienes fotos del daño que puedas compartir?"
+          );
+        case "estimate_damageHow":
+          return tr(
+            "Can you briefly tell me how the damage happened? (Type “skip” to skip.)",
+            "¿Puedes decirme brevemente cómo ocurrió el daño? (Escribe “saltar” para omitir.)"
+          );
+        default:
+          return tr("Continuing…", "Continuando…");
+      }
+    },
+    [tr]
+  );
+
+  useEffect(() => {
+    if (prevLangRef.current === lang) return;
+    prevLangRef.current = lang;
+
+    // Show a small confirmation in the chat
+    addMessage("bot", tr("Language updated.", "Idioma actualizado."));
+
+    // Re-ask the current prompt in the new language so it works mid-chat
+    const nextPrompt = promptForStep(step);
+
+    setMessages((prev) => {
+      const last = prev.slice().reverse().find((m) => m.from === "bot");
+      if (last && typeof last.text === "string" && last.text.trim() === nextPrompt.trim()) {
+        return prev;
+      }
+      return [...prev, { from: "bot", text: nextPrompt }];
+    });
+  }, [lang, step, tr, promptForStep]);
+
+  const [input, setInput] = useState("");
+
+  // local memory (estimate flow)
+  const [customerName, setCustomerName] = useState("");
+  const [helpSummary, setHelpSummary] = useState("");
+  const [haveVin, setHaveVin] = useState<"yes" | "no" | "maybe" | "unknown">("unknown");
+  const [vinValue, setVinValue] = useState("");
+  const [havePhotos, setHavePhotos] = useState<"yes" | "no" | "maybe" | "unknown">("unknown");
+
+  // forms memory
+  const [formsClaimType, setFormsClaimType] = useState<FormsClaimType | null>(null);
+  const [formsDeliveryChoice, setFormsDeliveryChoice] = useState<FormsDeliveryChoice>(null);
+  const [formsPdfIndex, setFormsPdfIndex] = useState(0);
+
+  const [authForm, setAuthForm] = useState<AuthFormData>({
+    fullName: "",
+    address: "",
+    townCity: "",
+    zip: "",
+    phone: "",
+    email: "",
+    year: "",
+    make: "",
+    model: "",
+    plate: "",
+    agree: false,
+    signatureDataUrl: "",
+  });
+
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  // ✅ Repair Authorization "read first" gate
+  const [authExplained, setAuthExplained] = useState(false);
+  const [authInfoOpen, setAuthInfoOpen] = useState(false);
+
+  // insurance web-forms (reuse signature)
+  const [dtpForm, setDtpForm] = useState<DirectionToPayFormData>({
+    date: yyyyMmDd(),
+    fullName: "",
+    insurerName: "",
+    claimNumber: "",
+    year: "",
+    make: "",
+    model: "",
+    agree: false,
+  });
+
+  const [drForm, setDrForm] = useState<DesignatedRepFormData>({
+    date: yyyyMmDd(),
+    fullName: "",
+    insurerName: "",
+    claimNumber: "",
+    year: "",
+    make: "",
+    model: "",
+    plate: "",
+    agree: false,
+  });
+
+  const [estForm, setEstForm] = useState<EstimateDismantleFormData>({
+    date: yyyyMmDd(),
+    fullName: "",
+    year: "",
+    make: "",
+    model: "",
+    plate: "",
+    agree: false,
+    notRepairAgree: false,
+  });
+
+  const [insuranceExplained, setInsuranceExplained] = useState<Record<InsuranceFormKey, boolean>>({
+    direction_to_pay: false,
+    designated_representative: false,
+    estimate_dismantling: false,
+  });
+
+  const [insuranceInfoOpen, setInsuranceInfoOpen] = useState<Record<InsuranceFormKey, boolean>>({
+    direction_to_pay: false,
+    designated_representative: false,
+    estimate_dismantling: false,
+  });
+
+  const [insuranceSubmitting, setInsuranceSubmitting] = useState(false);
+  const [insuranceError, setInsuranceError] = useState<string | null>(null);
+
+  // signature pad
+  const sigCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sigWrapRef = useRef<HTMLDivElement | null>(null);
+  const sigDrawingRef = useRef(false);
+  const sigLastRef = useRef<{ x: number; y: number } | null>(null);
+  const sigHasInkRef = useRef(false);
+  const [sigHasInk, setSigHasInk] = useState(false);
+
+  // focus refs (nice UX)
+  const fullNameRef = useRef<HTMLInputElement | null>(null);
+
+  // extra notes
+  const [extraNotes, setExtraNotes] = useState<string[]>([]);
+
+  // callback info
+  const [callbackNumber, setCallbackNumber] = useState("");
+
+  // uploads
+  const [uploads, setUploads] = useState<File[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const lastFilePickSigRef = useRef<string>("");
+
+  const [messages, setMessages] = useState<Message[]>([{ from: "bot", text: tr("Hey! 👋 How can we help you today?", "¡Hola! 👋 ¿En qué podemos ayudarte hoy?") }]);
+
+  // ✅ scroll the whole middle area (so forms never get clipped)
+  const scrollBodyRef = useRef<HTMLDivElement | null>(null);
+
+  // manager mode
+  const [managerMode, setManagerMode] = useState(false);
+
+  // handoff status (manager connection)
+  const [handoffStage, setHandoffStage] = useState<"idle" | "connecting" | "busy">("idle");
+  const handoffStageRef = useRef<"idle" | "connecting" | "busy">("idle");
+
+  // notify guards
+  const notifiedRef = useRef(false);
+  const sessionIdRef = useRef<string>("");
+
+  // mode switch (ask first)
+  const [pendingMode, setPendingMode] = useState<ConciergeMode | null>(null);
+  const prevStateRef = useRef<SavedChatState | null>(null);
+
+  // =========================
+  // init
+  // =========================
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    setManagerMode(params.get("manager") === "1");
+    sessionIdRef.current = makeSessionId();
+  }, []);
+
+  // ✅ auto scroll to bottom (so user sees latest + form)
+  useEffect(() => {
+    if (!open) return;
+    const el = scrollBodyRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages, open, uploads, pendingMode, step, formsPdfIndex]);
+
+  function addMessage(from: "bot" | "user", text: string) {
+    setMessages((prev) => [...prev, { from, text }]);
+  }
+
+  function addBotOnce(text: string) {
+    setMessages((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && last.from === "bot" && last.text === text) return prev;
+      return [...prev, { from: "bot", text }];
+    });
+  }
+
+  // =========================
+  // signature canvas init (responsive + white bg)
+  // =========================
+  useEffect(() => {
+    if (step !== "forms_auth") return;
+
+    const canvas = sigCanvasRef.current;
+    const wrap = sigWrapRef.current;
+    if (!canvas || !wrap) return;
+
+    const setup = () => {
+      const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+      const cssH = 170;
+
+      const measuredW = Math.floor(wrap.clientWidth || 740);
+      const cssW = Math.max(280, measuredW);
+
+      canvas.style.width = "100%";
+      canvas.style.height = `${cssH}px`;
+
+      canvas.width = cssW * dpr;
+      canvas.height = cssH * dpr;
+
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      // White background (so black ink shows & export looks correct)
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, cssW, cssH);
+
+      // pen
+      ctx.lineWidth = 2.6;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "#000000";
+
+      sigHasInkRef.current = false;
+      setSigHasInk(false);
+      sigLastRef.current = null;
+
+      setTimeout(() => fullNameRef.current?.focus(), 50);
+    };
+
+    setup();
+    window.addEventListener("resize", setup);
+    return () => window.removeEventListener("resize", setup);
+  }, [step]);
+
+  function getCanvasPoint(e: PointerEvent | React.PointerEvent) {
+    const canvas = sigCanvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const x = (("clientX" in e ? e.clientX : 0) - rect.left);
+    const y = (("clientY" in e ? e.clientY : 0) - rect.top);
+    return { x, y };
+  }
+
+  function sigStart(e: React.PointerEvent) {
+    const canvas = sigCanvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+
+    (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId);
+    sigDrawingRef.current = true;
+
+    const p = getCanvasPoint(e);
+    sigLastRef.current = p;
+
+    if (p) {
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+    }
+  }
+
+  function sigMove(e: React.PointerEvent) {
+    const canvas = sigCanvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    if (!sigDrawingRef.current) return;
+
+    const p = getCanvasPoint(e);
+    const last = sigLastRef.current;
+    if (!p || !last) return;
+
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+
+    sigLastRef.current = p;
+
+    if (!sigHasInkRef.current) {
+      sigHasInkRef.current = true;
+      setSigHasInk(true);
+    }
+  }
+
+  function sigEnd() {
+    sigDrawingRef.current = false;
+    sigLastRef.current = null;
+
+    const canvas = sigCanvasRef.current;
+    if (!canvas) return;
+
+    const dataUrl = canvas.toDataURL("image/png");
+    setAuthForm((prev) => ({ ...prev, signatureDataUrl: dataUrl }));
+  }
+
+  function clearSignature() {
+    const canvas = sigCanvasRef.current;
+    const wrap = sigWrapRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx || !wrap) return;
+
+    const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+    const cssH = 170;
+    const cssW = Math.max(280, Math.floor(wrap.clientWidth || 740));
+
+    // clear entire backing store
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // redraw white
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, cssW, cssH);
+
+    // pen again
+    ctx.lineWidth = 2.6;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#000000";
+
+    sigHasInkRef.current = false;
+    setSigHasInk(false);
+    setAuthForm((prev) => ({ ...prev, signatureDataUrl: "" }));
+  }
+
+  function close() {
+    window.dispatchEvent(
+      new CustomEvent("concierge:close", { detail: { source: "pill" } })
+    );
+    setOpen(false);
+  }
+
+  function isMidFlow() {
+    const progressed = step !== "help";
+    const hasData =
+      customerName.trim().length > 0 ||
+      helpSummary.trim().length > 0 ||
+      uploads.length > 0 ||
+      callbackNumber.trim().length > 0 ||
+      extraNotes.length > 0 ||
+      haveVin !== "unknown" ||
+      havePhotos !== "unknown" ||
+      vinValue.trim().length > 0 ||
+      formsClaimType !== null ||
+      formsDeliveryChoice !== null ||
+      authForm.fullName.trim().length > 0 ||
+      mode !== "default";
+    return progressed || hasData;
+  }
+
+  function snapshotState(): SavedChatState {
+    return {
+      mode,
+      intent,
+      step,
+      messages,
+
+      customerName,
+      helpSummary,
+
+      haveVin,
+      vinValue,
+      havePhotos,
+
+      formsClaimType,
+      formsDeliveryChoice,
+      formsPdfIndex,
+
+      authForm,
+      dtpForm,
+      drForm,
+      estForm,
+      insuranceExplained,
+      authExplained,
+
+      extraNotes,
+      callbackNumber,
+
+      uploads,
+      lastFilePickSig: lastFilePickSigRef.current,
+
+      notified: notifiedRef.current,
+      sessionId: sessionIdRef.current || "",
+    };
+  }
+
+  function restoreState(s: SavedChatState) {
+    setMode(s.mode);
+    setIntent(s.intent);
+    setStep(s.step);
+    setMessages(s.messages);
+
+    setCustomerName(s.customerName);
+    setHelpSummary(s.helpSummary);
+
+    setHaveVin(s.haveVin);
+    setVinValue(s.vinValue);
+    setHavePhotos(s.havePhotos);
+
+    setFormsClaimType(s.formsClaimType);
+    setFormsDeliveryChoice(s.formsDeliveryChoice);
+    setFormsPdfIndex(s.formsPdfIndex);
+
+    setAuthForm(s.authForm);
+    setDtpForm(s.dtpForm);
+    setDrForm(s.drForm);
+    setEstForm(s.estForm);
+    setInsuranceExplained(s.insuranceExplained);
+    setAuthExplained(s.authExplained ?? false);
+    setAuthInfoOpen(false);
+    setInsuranceInfoOpen({ direction_to_pay: false, designated_representative: false, estimate_dismantling: false });
+
+    setExtraNotes(s.extraNotes);
+    setCallbackNumber(s.callbackNumber);
+
+    setUploads(s.uploads);
+    lastFilePickSigRef.current = s.lastFilePickSig;
+
+    notifiedRef.current = s.notified;
+    sessionIdRef.current = s.sessionId || makeSessionId();
+
+    setInput("");
+    setPendingMode(null);
+  }
+
+  function resetChat(nextMode: ConciergeMode = "default") {
+    setMode(nextMode);
+
+    setIntent("other");
+    setStep(nextMode === "forms" ? "forms_claimType" : "help");
+    setInput("");
+
+    setCustomerName("");
+    setHelpSummary("");
+    setHaveVin("unknown");
+    setVinValue("");
+    setHavePhotos("unknown");
+
+    setFormsClaimType(null);
+    setFormsDeliveryChoice(null);
+    setFormsPdfIndex(0);
+
+    setAuthForm({
+      fullName: "",
+      address: "",
+      townCity: "",
+      zip: "",
+      phone: "",
+      email: "",
+      year: "",
+      make: "",
+      model: "",
+      plate: "",
+      agree: false,
+      signatureDataUrl: "",
+    });
+
+    setDtpForm({ date: yyyyMmDd(), fullName: "", insurerName: "", claimNumber: "", year: "", make: "", model: "", agree: false });
+    setDrForm({ date: yyyyMmDd(), fullName: "", insurerName: "", claimNumber: "", year: "", make: "", model: "", plate: "", agree: false });
+    setEstForm({ date: yyyyMmDd(), fullName: "", year: "", make: "", model: "", plate: "", agree: false, notRepairAgree: false });
+    setInsuranceExplained({ direction_to_pay: false, designated_representative: false, estimate_dismantling: false });
+    setInsuranceInfoOpen({ direction_to_pay: false, designated_representative: false, estimate_dismantling: false });
+    setInsuranceSubmitting(false);
+    setInsuranceError(null);
+    setAuthError(null);
+    setAuthSubmitting(false);
+    setAuthExplained(false);
+    setAuthInfoOpen(false);
+
+    setUploads([]);
+    setCallbackNumber("");
+    setExtraNotes([]);
+    lastFilePickSigRef.current = "";
+
+    notifiedRef.current = false;
+    sessionIdRef.current = makeSessionId();
+
+    handoffStageRef.current = "idle";
+    setHandoffStage("idle");
+
+    setPendingMode(null);
+
+    if (nextMode === "forms") {
+      setMessages([
+        {
+          from: "bot",
+          text: tr(
+            "Let’s get your repair forms started.",
+            "Vamos a comenzar tus formularios de reparación."
+          ),
+        },
+        {
+          from: "bot",
+          text: tr(
+            "Is this Out of Pocket, or an Insurance Claim?",
+            "¿Es pago directo o un reclamo de seguro?"
+          ),
+        },
+      ]);
+    } else {
+      setMessages([
+        {
+          from: "bot",
+          text: tr(
+            "Hey! 👋 How can we help you today?",
+            "¡Hola! 👋 ¿En qué podemos ayudarte hoy?"
+          ),
+        },
+      ]);
+    }
+  }
+
+  // =========================
+  // Mode routing listener
+  // =========================
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      const ce = ev as CustomEvent<ConciergeOpenEventDetail>;
+      const requestedMode: ConciergeMode = ce?.detail?.mode ?? "default";
+      const requestedIntent: Intent | undefined = ce?.detail?.intent;
+
+      setOpen(true);
+
+      // If the opener explicitly requested a flow (e.g., the header "Estimate Tool" button),
+      // restart into that flow immediately.
+      if (requestedMode === "default" && requestedIntent === "estimate") {
+        if (isMidFlow()) {
+          prevStateRef.current = snapshotState();
+        }
+
+        resetChat("default");
+        setIntent("estimate");
+        setHelpSummary("estimate");
+        setMessages([
+          {
+            from: "bot",
+            text: tr(
+              "Let’s get you a quick estimate.",
+              "Vamos a prepararte un estimado rápido."
+            ),
+          },
+          { from: "bot", text: tr("What’s your name?", "¿Cómo te llamas?") },
+        ]);
+        setStep("name");
+
+        if (prevStateRef.current) {
+          setTimeout(() => {
+            addMessage("bot", 'If you want to come back to what you were working on, click "Resume" (or type "resume").');
+          }, 0);
+        }
+
+        return;
+      }
+
+      // ✅ If the user explicitly clicked "Forms", we should immediately start the Forms branch.
+      // No "are you sure you want to switch" prompt — they already decided.
+      if (requestedMode === "forms") {
+        if (mode !== "forms" && isMidFlow()) {
+          prevStateRef.current = snapshotState();
+        }
+
+        resetChat("forms");
+
+        if (prevStateRef.current) {
+          setTimeout(() => {
+            addMessage("bot", 'If you want to come back to what you were working on, click "Resume" (or type "resume").');
+          }, 0);
+        }
+
+        return;
+      }
+
+      if (isMidFlow() && requestedMode !== mode) {
+        setPendingMode(requestedMode);
+        return;
+      }
+
+      if (requestedMode !== mode) resetChat(requestedMode);
+    };
+
+    window.addEventListener("concierge:open", handler as EventListener);
+    return () => window.removeEventListener("concierge:open", handler as EventListener);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, step, customerName, helpSummary, uploads.length, callbackNumber, extraNotes.length, haveVin, havePhotos, vinValue, formsClaimType, formsDeliveryChoice, authForm.fullName]);
+
+  // =========================
+  // helpers
+  // =========================
+  
+function parseYesNoNotSure(text: string): "yes" | "no" | "not_sure" | "unknown" {
+  const t = text.trim().toLowerCase();
+
+  // YES (English + Spanish)
+  if (
+    t === "y" ||
+    t === "yes" ||
+    t === "yeah" ||
+    t === "yea" ||
+    t === "yep" ||
+    t === "sure" ||
+    t === "si" ||
+    t === "sí" ||
+    t === "s" ||
+    t === "claro" ||
+    t === "seguro" ||
+    t.includes("yes") ||
+    t.includes("sí") ||
+    t.includes("si ")
+  )
+    return "yes";
+
+  // NO (English + Spanish)
+  if (
+    t === "n" ||
+    t === "no" ||
+    t === "nope" ||
+    t === "nop" ||
+    t.includes("not really") ||
+    t.includes("dont") ||
+    t.includes("don't") ||
+    t.includes("para nada") ||
+    t.includes("no realmente")
+  )
+    return "no";
+
+  // NOT SURE (English + Spanish)
+  if (
+    t.includes("not sure") ||
+    t.includes("unsure") ||
+    t.includes("maybe") ||
+    t.includes("kinda") ||
+    t.includes("no se") ||
+    t.includes("no sé") ||
+    t.includes("no estoy seguro") ||
+    t.includes("no estoy segura") ||
+    t.includes("tal vez") ||
+    t.includes("quizas") ||
+    t.includes("quizás")
+  )
+    return "not_sure";
+
+  return "unknown";
+}
+
+function detectIntent(text: string): Intent {
+    const t = text.toLowerCase();
+
+    if (
+      t.includes("estimate") ||
+      t.includes("quote") ||
+      t.includes("pricing") ||
+      t.includes("how much") ||
+      t.includes("repair cost")
+    )
+      return "estimate";
+
+    if (
+      t.includes("accident") ||
+      t.includes("crash") ||
+      t.includes("hit") ||
+      t.includes("rear ended") ||
+      t.includes("rear-ended") ||
+      t.includes("collision") ||
+      t.includes("totaled")
+    )
+      return "accident";
+
+    if (
+      t.includes("insurance") ||
+      t.includes("claim") ||
+      t.includes("geico") ||
+      t.includes("progressive") ||
+      t.includes("state farm") ||
+      t.includes("allstate") ||
+      t.includes("liberty mutual")
+    )
+      return "insurance";
+
+    return "other";
+  }
+
+  function interpretHaveVinAnswer(text: string): "yes" | "no" | "maybe" | "unknown" {
+    const t = text.trim().toLowerCase();
+    const mentionsVin = t.includes("vin");
+    const mentionsPhoto = t.includes("photo") || t.includes("picture") || t.includes("pic") || t.includes("image") || t.includes("screenshot");
+    if (mentionsVin && mentionsPhoto) return "yes";
+
+    if (
+      t === "y" ||
+      t === "yes" ||
+      t === "ya" ||
+      t.includes("yeah") ||
+      t.includes("yea") ||
+      t.includes("yep") ||
+      t.includes("sure") ||
+      t.includes("have it") ||
+      t.includes("got it") ||
+      t.includes("i have the vin") ||
+      t.includes("i have vin")
+    )
+      return "yes";
+
+    if (t === "n" || t === "no" || t.includes("don't have") || t.includes("dont have") || t.includes("do not have"))
+      return "no";
+
+    if (t.includes("not sure") || t.includes("maybe") || t.includes("later") || t.includes("can get it")) return "maybe";
+
+    return "unknown";
+  }
+
+  function interpretHavePhotosAnswer(text: string): "yes" | "no" | "maybe" | "unknown" {
+    const t = text.trim().toLowerCase();
+
+    if (
+      t === "y" ||
+      t === "yes" ||
+      t === "ya" ||
+      t.includes("yeah") ||
+      t.includes("yea") ||
+      t.includes("yep") ||
+      t.includes("sure") ||
+      t.includes("i do") ||
+      t.includes("i have") ||
+      t.includes("got") ||
+      t.includes("have them")
+    ) {
+      if (t.includes("not yet") || t.includes("later") || t.includes("soon")) return "maybe";
+      return "yes";
+    }
+
+    if (t.includes("photo") || t.includes("picture") || t.includes("pic") || t.includes("image")) {
+      if (t.includes("not yet") || t.includes("later") || t.includes("soon")) return "maybe";
+      return "yes";
+    }
+
+    if (t.includes("not yet") || t.includes("later") || t.includes("soon")) return "maybe";
+    if (t === "n" || t === "no" || t.includes("nope")) return "no";
+
+    return "unknown";
+  }
+
+  function looksLikeVin(text: string) {
+    const cleaned = text.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (cleaned.length !== 17) return false;
+    return /^[A-Z0-9]{17}$/.test(cleaned);
+  }
+
+  function fileSignature(files: File[]) {
+    return files.map((f) => `${f.name}|${f.size}|${f.lastModified}`).sort().join("::");
+  }
+
+  function onPickFiles(list: FileList | null) {
+    if (!list || list.length === 0) return;
+
+    const picked = Array.from(list);
+
+    // Prevent duplicate "change" events from re-adding the same selection
+    const sig = picked.map((f) => `${f.name}:${f.size}:${f.lastModified}`).join("|");
+    if (sig && sig === lastFilePickSigRef.current) return;
+    lastFilePickSigRef.current = sig;
+
+    // Limits (keeps email payloads reasonable)
+    const MAX_FILES = 10;
+    const MAX_TOTAL_BYTES = 20 * 1024 * 1024; // ~20MB (Gmail limit is ~25MB)
+    const existingTotal = uploads.reduce((sum, f) => sum + f.size, 0);
+
+    let total = existingTotal;
+    let remaining = Math.max(0, MAX_FILES - uploads.length);
+    const willAdd: File[] = [];
+
+    for (const f of picked) {
+      if (remaining <= 0) break;
+      if (total + f.size > MAX_TOTAL_BYTES) break;
+      willAdd.push(f);
+      total += f.size;
+      remaining -= 1;
+    }
+
+    if (willAdd.length === 0) {
+      addMessage("bot", "No more files can be added (limit reached).");
+      return;
+    }
+
+    setUploads((prev) => [...prev, ...willAdd]);
+
+    addMessage(
+      "bot",
+      `Got it — added ${willAdd.length} file${willAdd.length === 1 ? "" : "s"}.`
+    );
+  }
+
+  function handleFilesChosen(e: ChangeEvent<HTMLInputElement>) {
+    onPickFiles(e.target.files);
+    // Allow selecting the same file again.
+    e.target.value = "";
+  }
+
+  function removeUpload(index: number) {
+    setUploads((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function askCallbackNumber(preface?: string) {
+  if (preface) {
+    addMessage("bot", preface);
+  } else {
+    addMessage("bot", "Perfect — thank you. I’m going to connect you with the manager now.");
+  }
+  addMessage("bot", "Just in case we get disconnected or can’t connect right away, what’s the best number to call or text you back?");
+  setStep("callback_number");
+}
+
+  function askUploadsThenCallback(preamble?: string) {
+    if (preamble) addMessage("bot", preamble);
+    addMessage("bot", "Do you have any photos or documents you can upload now? (Optional — Yes / No)");
+    setStep("estimate_havePhotos");
+  }
+
+
+  function enterHandoffConnecting() {
+    handoffStageRef.current = "connecting";
+    setHandoffStage("connecting");
+    addBotOnce("Please hold while we connect you with the manager.");
+    setStep("done");
+  }
+
+  function continueFromUpload() {
+    askCallbackNumber();
+  }
+
+  function skipUpload() {
+    addMessage("bot", "No problem — you can always add photos later.");
+    addMessage("bot", "I’m going to connect you with the manager now.");
+    addMessage("bot", "Just in case we get disconnected or can’t connect right away, what’s the best number to call or text you back?");
+    setStep("callback_number");
+  }
+
+  // =========================
+  // notify manager
+  // =========================
+  function extractNotesStructured(lines: string[]) {
+    const out: any = {};
+    const free: string[] = [];
+
+    for (const raw of lines || []) {
+      const line = String(raw || "").trim();
+      if (!line) continue;
+
+      // Pattern: "Section: key=value" or "Section: value"
+      const m = line.match(/^([^:]{2,40}):\s*(.+)$/);
+      if (m) {
+        const section = m[1].trim().toLowerCase().replace(/\s+/g, "_");
+        const rest = m[2].trim();
+
+        // key=value pairs inside rest
+        const kv = rest.match(/^([a-z0-9_ -]{2,40})\s*=\s*(.+)$/i);
+        if (kv) {
+          const key = kv[1].trim().toLowerCase().replace(/\s+/g, "_");
+          const val = kv[2].trim();
+          out[section] = out[section] || {};
+          out[section][key] = val;
+        } else {
+          out[section] = out[section] ?? [];
+          if (Array.isArray(out[section])) out[section].push(rest);
+          else out[section] = rest;
+        }
+        continue;
+      }
+
+      free.push(line);
+    }
+
+    if (free.length) out.freeText = free;
+    return out;
+  }
+
+  async function notifyManagerOnce() {
+    if (notifiedRef.current) return;
+    notifiedRef.current = true;
+
+    try {
+      const answers = {
+        // basics
+        customerName,
+        callbackNumber,
+        intent,
+        mode,
+        step,
+
+        // estimate intake
+        helpSummary,
+        haveVin,
+        vinValue,
+        havePhotos,
+        notes: extraNotes,
+
+        // forms
+        formsClaimType,
+        formsDeliveryChoice,
+        authForm: mode === "forms" ? { ...authForm, signatureDataUrl: authForm.signatureDataUrl ? "[captured]" : "" } : undefined,
+        dtpForm: mode === "forms" ? dtpForm : undefined,
+        drForm: mode === "forms" ? drForm : undefined,
+        estForm: mode === "forms" ? estForm : undefined,
+      };
+
+      const payload = {
+        createdAt: new Date().toISOString(),
+        sessionId: sessionIdRef.current,
+        branch: mode,
+        intent,
+        step,
+        answers,
+        extracted: extractNotesStructured(extraNotes),
+        uploadsCount: uploads.length,
+        uploadNames: uploads.map((f) => f.name),
+        skippedUploads: uploads.length === 0,
+      };
+
+      const fd = new FormData();
+      fd.append("payload", JSON.stringify(payload));
+
+      // Attach files (cap total size to avoid SMTP limits like Gmail's ~25MB)
+      const MAX_TOTAL = 20 * 1024 * 1024; // 20MB
+      let total = 0;
+
+      for (const f of uploads) {
+        if (!f) continue;
+        if (total + f.size > MAX_TOTAL) continue;
+        total += f.size;
+        fd.append("files", f, f.name);
+      }
+
+      const res = await fetch("/api/concierge/notify", {
+        method: "POST",
+        body: fd,
+      });
+
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        throw new Error(`Notify failed (${res.status}): ${t}`);
+      }
+    } catch (err) {
+      console.error("notifyManagerOnce error", err);
+      // allow retry if needed
+      notifiedRef.current = false;
+    }
+  }
+
+  useEffect(() => {
+    if (step !== "done") return;
+    if (!customerName && !callbackNumber) return;
+    notifyManagerOnce();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
+
+  // If the manager doesn’t respond in time, show an unavailable message.
+  useEffect(() => {
+    if (step !== "done") return;
+    if (handoffStage !== "connecting") return;
+
+    const t = window.setTimeout(() => {
+      if (handoffStageRef.current !== "connecting") return;
+      handoffStageRef.current = "busy";
+      setHandoffStage("busy");
+      addBotOnce("The manager is not available at the moment, but will reach out as soon as possible.");
+    }, 60000);
+
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step, handoffStage, tr]);
+
+  useEffect(() => {
+    if (step !== "forms_complete") return;
+    notifyManagerOnce();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
+
+  // =========================
+  // forms helpers
+  // =========================
+  function parseFormsClaimType(text: string): FormsClaimType | null {
+    const t = text.trim().toLowerCase();
+
+    if (
+      t.includes("out of pocket") ||
+      t.includes("out-of-pocket") ||
+      t.includes("cash") ||
+      t.includes("pay myself") ||
+      t.includes("self pay") ||
+      t === "oop"
+    )
+      return "out_of_pocket";
+
+    if (
+      t.includes("insurance") ||
+      t.includes("claim") ||
+      t.includes("geico") ||
+      t.includes("progressive") ||
+      t.includes("state farm") ||
+      t.includes("allstate") ||
+      t.includes("liberty mutual")
+    )
+      return "insurance";
+
+    if (t === "out" || t === "pocket") return "out_of_pocket";
+    if (t === "ins" || t === "insurance") return "insurance";
+
+    return null;
+  }
+
+  function parseDeliveryChoice(text: string): FormsDeliveryChoice {
+    const t = text.trim().toLowerCase();
+    if (t.includes("fill") || t.includes("online")) return "fill";
+    if (t.includes("download") || t.includes("copy") || t.includes("print")) return "download";
+    if (t === "f") return "fill";
+    if (t === "d") return "download";
+    return null;
+  }
+
+  function showFormsList(ct: FormsClaimType) {
+    if (ct === "out_of_pocket") {
+      addMessage("bot", "Got it — Out of Pocket.");
+      addMessage("bot", "We’ll start with the Repair Authorization form.");
+      addMessage("bot", "Would you like to fill it out online, or download a copy?");
+      setStep("forms_delivery");
+      return;
+    }
+
+    addMessage("bot", "Got it — Insurance Claim.");
+    addMessage("bot", "We’ll prepare these forms:");
+    addMessage("bot", "• Repair Authorization\n• Direction to Pay\n• Designated Representative\n• Authorization for Estimate & Dismantling");
+    addMessage("bot", "We’ll start with the Repair Authorization form.");
+    addMessage("bot", "Would you like to fill it out online, or download a copy?");
+    setStep("forms_delivery");
+  }
+
+  async function submitRepairAuthorization() {
+    setAuthError(null);
+
+    const cleanedPhone = normalizePhone(authForm.phone);
+    const phoneOk = cleanedPhone.length === 10 || (cleanedPhone.length === 11 && cleanedPhone.startsWith("1"));
+
+    if (!authForm.fullName.trim()) return setAuthError("Please enter your name.");
+    if (!phoneOk) return setAuthError("Please enter a valid phone number.");
+    if (!authExplained) return setAuthError('Please click "Click here: Please read first" before agreeing.');
+    if (!authForm.agree) return setAuthError("Please check the authorization box.");
+    if (!sigHasInkRef.current || !authForm.signatureDataUrl) return setAuthError("Please sign in the signature box.");
+
+    setAuthSubmitting(true);
+    try {
+      const payload = {
+        sessionId: sessionIdRef.current,
+        claimType: formsClaimType,
+        form: {
+          ...authForm,
+          phone: formatPhone(cleanedPhone),
+        },
+      };
+
+      const res = await fetch("/api/forms/authorization", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        throw new Error(t || "Failed to generate PDF.");
+      }
+
+      const blob = await res.blob();
+      const filename = `UAB-Repair-Authorization-${slugifyFileName(authForm.fullName)}-${yyyyMmDd()}.pdf`;
+      downloadBlob(blob, filename);
+
+      addMessage("bot", "Done ✅ Your signed authorization was generated and downloaded.");
+
+      if (formsClaimType === "insurance") {
+        setFormsPdfIndex(0);
+        addMessage("bot", `Next — ${INSURANCE_FORMS[0].title}. Fill it out below, then click Done.`);
+        setStep("forms_pdf");
+      } else {
+        addMessage("bot", "Next — any notes for the shop? (Optional — type “skip”)");
+        setStep("forms_notes");
+      }
+    } catch (e: any) {
+      setAuthError(e?.message || "Something went wrong generating the PDF.");
+    } finally {
+      setAuthSubmitting(false);
+    }
+  }
+
+  // Repair Authorization: must click read-first once
+  function toggleAuthInfo() {
+    setAuthInfoOpen((prev) => {
+      const nextOpen = !prev;
+      if (nextOpen) setAuthExplained(true);
+      return nextOpen;
+    });
+  }
+
+  // =========================
+  // Insurance web-forms (same UX as Repair Authorization)
+  // =========================
+  function toggleInsuranceInfo(key: InsuranceFormKey) {
+    setInsuranceInfoOpen((prev) => {
+      const nextOpen = !prev[key];
+      const next = { ...prev, [key]: nextOpen };
+      if (nextOpen) {
+        setInsuranceExplained((e) => ({ ...e, [key]: true }));
+      }
+      return next;
+    });
+  }
+
+  // Prefill insurance forms from Repair Authorization (only when empty)
+  useEffect(() => {
+    if (!(mode === "forms" && step === "forms_pdf" && formsClaimType === "insurance")) return;
+
+    const n = authForm.fullName?.trim() || "";
+    const y = authForm.year?.trim() || "";
+    const mk = authForm.make?.trim() || "";
+    const md = authForm.model?.trim() || "";
+    const pl = authForm.plate?.trim() || "";
+
+    setDtpForm((p) => ({
+      ...p,
+      date: p.date || yyyyMmDd(),
+      fullName: p.fullName || n,
+      year: p.year || y,
+      make: p.make || mk,
+      model: p.model || md,
+    }));
+
+    setDrForm((p) => ({
+      ...p,
+      date: p.date || yyyyMmDd(),
+      fullName: p.fullName || n,
+      year: p.year || y,
+      make: p.make || mk,
+      model: p.model || md,
+      plate: p.plate || pl,
+    }));
+
+    setEstForm((p) => ({
+      ...p,
+      date: p.date || yyyyMmDd(),
+      fullName: p.fullName || n,
+      year: p.year || y,
+      make: p.make || mk,
+      model: p.model || md,
+      plate: p.plate || pl,
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, step, formsClaimType, authForm.fullName, authForm.year, authForm.make, authForm.model, authForm.plate]);
+
+  function openInNewTab(url: string) {
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  async function submitCurrentInsuranceForm() {
+    setInsuranceError(null);
+
+    if (formsPdfIndex >= INSURANCE_FORMS.length) return;
+
+    const current = INSURANCE_FORMS[formsPdfIndex];
+    const key = current.key as InsuranceFormKey;
+
+    // Must expand "What is this?" at least once
+    if (!insuranceExplained[key]) {
+      return setInsuranceError('Please click "What is this?" and review the form explanation before agreeing.');
+    }
+
+    // Must have signature on file
+    if (!authForm.signatureDataUrl) {
+      return setInsuranceError("Missing signature. Please complete the Repair Authorization signature first.");
+    }
+
+    // Validation + payload per form
+    let kind: "direction_to_pay" | "designated_representative" | "estimate_dismantling" = current.kind;
+    let form: any = null;
+    let filenameBase = "";
+
+    if (kind === "direction_to_pay") {
+      if (!dtpForm.fullName.trim()) return setInsuranceError("Please enter your name.");
+      if (!dtpForm.insurerName.trim()) return setInsuranceError("Please enter the insurance company name.");
+      if (!dtpForm.year.trim() || !dtpForm.make.trim() || !dtpForm.model.trim())
+        return setInsuranceError("Please enter the vehicle year, make, and model.");
+      if (!dtpForm.agree) return setInsuranceError("Please check the agreement box.");
+      form = { ...dtpForm, signatureDataUrl: authForm.signatureDataUrl };
+      filenameBase = "UAB-Direction-to-Pay";
+    }
+
+    if (kind === "designated_representative") {
+      if (!drForm.fullName.trim()) return setInsuranceError("Please enter your name.");
+      if (!drForm.insurerName.trim()) return setInsuranceError("Please enter the insurance company name.");
+      if (!drForm.year.trim() || !drForm.make.trim() || !drForm.model.trim())
+        return setInsuranceError("Please enter the vehicle year, make, and model.");
+      if (!drForm.agree) return setInsuranceError("Please check the agreement box.");
+      form = { ...drForm, signatureDataUrl: authForm.signatureDataUrl };
+      filenameBase = "UAB-Designated-Representative";
+    }
+
+    if (kind === "estimate_dismantling") {
+      if (!estForm.fullName.trim()) return setInsuranceError("Please enter your name.");
+      if (!estForm.year.trim() || !estForm.make.trim() || !estForm.model.trim())
+        return setInsuranceError("Please enter the vehicle year, make, and model.");
+      if (!estForm.agree) return setInsuranceError("Please check the agreement box.");
+      if (!estForm.notRepairAgree)
+        return setInsuranceError("Please confirm you understand this is NOT an authorization to repair.");
+      form = { ...estForm, signatureDataUrl: authForm.signatureDataUrl };
+      filenameBase = "UAB-Authorization-Estimate-Dismantling";
+    }
+
+    setInsuranceSubmitting(true);
+    try {
+      const payload = {
+        sessionId: sessionIdRef.current,
+        claimType: formsClaimType,
+        kind,
+        form,
+      };
+
+      const res = await fetch("/api/forms/authorization", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        throw new Error(t || "Failed to generate PDF.");
+      }
+
+      const blob = await res.blob();
+      const filename = `${filenameBase}-${slugifyFileName(form.fullName)}-${yyyyMmDd()}.pdf`;
+      downloadBlob(blob, filename);
+
+      addMessage("bot", `Done ✅ ${current.title} was generated and downloaded.`);
+
+      const next = formsPdfIndex + 1;
+      if (next < INSURANCE_FORMS.length) {
+        setFormsPdfIndex(next);
+        addMessage("bot", `Next — ${INSURANCE_FORMS[next].title}. Fill it out below, then generate & download.`);
+        return;
+      }
+
+      // Packet step (optional)
+      setFormsPdfIndex(INSURANCE_FORMS.length);
+      addMessage("bot", "Optional — download the full packet (all 4 forms together), or continue to add notes.");
+    } catch (e: any) {
+      setInsuranceError(e?.message || "Something went wrong generating the PDF.");
+    } finally {
+      setInsuranceSubmitting(false);
+    }
+  }
+
+  async function downloadFullPacketAll4() {
+    setInsuranceError(null);
+
+    if (!authForm.signatureDataUrl) {
+      return setInsuranceError("Missing signature. Please complete the Repair Authorization signature first.");
+    }
+
+    setInsuranceSubmitting(true);
+    try {
+      const payload = {
+        sessionId: sessionIdRef.current,
+        claimType: formsClaimType,
+        kind: "packet_all_4",
+        packet: {
+          repairAuth: {
+            ...authForm,
+            phone: formatPhone(normalizePhone(authForm.phone)),
+          },
+          dtp: { ...dtpForm, signatureDataUrl: authForm.signatureDataUrl },
+          dr: { ...drForm, signatureDataUrl: authForm.signatureDataUrl },
+          est: { ...estForm, signatureDataUrl: authForm.signatureDataUrl },
+        },
+      };
+
+      const res = await fetch("/api/forms/authorization", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        throw new Error(t || "Failed to generate PDF.");
+      }
+
+      const blob = await res.blob();
+      const filename = `UAB-Forms-Packet-All-4-${slugifyFileName(authForm.fullName)}-${yyyyMmDd()}.pdf`;
+      downloadBlob(blob, filename);
+
+      addMessage("bot", "Done ✅ Full packet downloaded.");
+    } catch (e: any) {
+      setInsuranceError(e?.message || "Something went wrong generating the PDF.");
+    } finally {
+      setInsuranceSubmitting(false);
+    }
+  }
+
+  function continueToNotes() {
+    addMessage("bot", "Perfect — last step. Any notes for the shop? (Optional — type “skip”)");
+    setStep("forms_notes");
+  }
+
+  function handleSwitchChoice(choice: "switch" | "keep") {
+    if (!pendingMode) return;
+
+    if (choice === "keep") {
+      setPendingMode(null);
+      return;
+    }
+
+    prevStateRef.current = snapshotState();
+    const next = pendingMode;
+    setPendingMode(null);
+    resetChat(next);
+
+    setTimeout(() => {
+      addMessage("bot", 'If you want to come back to what you were working on, click "Resume" (or type "resume").');
+    }, 0);
+  }
+
+  function resumePrevious() {
+    const s = prevStateRef.current;
+    if (!s) return;
+    prevStateRef.current = null;
+    restoreState(s);
+  }
+
+  function parsePhoneOk(text: string) {
+    const digits = normalizePhone(text);
+    return digits.length === 10 || (digits.length === 11 && digits.startsWith("1"));
+  }
+
+  // =========================
+  // send (chat input)
+  // =========================
+  // Allow both typed input and quick-reply button clicks.
+  function send(overrideText?: string) {
+    // NOTE: React onClick will pass a MouseEvent if you do onClick={() => send()}.
+    // Guard that case so we never try to .trim() a non-string.
+    const raw = typeof overrideText === "string" ? overrideText : input;
+    const text = String(raw ?? "").trim();
+    if (!text) return;
+
+    if (step === "done" && handoffStageRef.current === "connecting") return;
+
+    // If user clicked a quick-reply, clear whatever was in the input as well.
+    setInput("");
+    addMessage("user", text);
+
+    if (text.toLowerCase() === "resume" && prevStateRef.current) {
+      addMessage("bot", "Sure — taking you back to what you were working on.");
+      const s = prevStateRef.current;
+      prevStateRef.current = null;
+      restoreState(s);
+      return;
+    }
+
+    // =========================
+    // FORMS MODE
+    // =========================
+    if (mode === "forms") {
+      if (step === "forms_claimType") {
+        const ct = parseFormsClaimType(text);
+        if (!ct) {
+          addMessage("bot", 'Just to confirm — is this "Out of Pocket" or an "Insurance Claim"?');
+          return;
+        }
+        setFormsClaimType(ct);
+        showFormsList(ct);
+        return;
+      }
+
+      if (step === "forms_delivery") {
+        const choice = parseDeliveryChoice(text);
+        if (!choice) {
+          addMessage("bot", 'Would you like to **fill online** or **download a copy**? (Type: "fill" or "download")');
+          return;
+        }
+        setFormsDeliveryChoice(choice);
+
+        if (choice === "download") {
+          addMessage("bot", "No problem — use the buttons below to download the forms.");
+          addMessage("bot", 'When you’re done, click "Continue".');
+          return;
+        }
+
+        addMessage("bot", "Perfect — fill it out below and sign with your finger/mouse.");
+        setStep("forms_auth");
+        return;
+      }
+
+      if (step === "forms_notes") {
+        const lower = text.trim().toLowerCase();
+        if (lower === "skip" || lower === "no" || lower === "none") {
+          addMessage("bot", "Perfect — you’re all set.");
+          setStep("forms_complete");
+          return;
+        }
+        setExtraNotes((prev) => [...prev, text]);
+        addMessage("bot", "Got it — thank you.");
+        addMessage("bot", "Perfect — you’re all set.");
+        setStep("forms_complete");
+        return;
+      }
+
+      if (step === "forms_complete") {
+        addMessage("bot", "If you need anything else, just tell me what’s up.");
+        return;
+      }
+
+      // If they type while on forms_auth/forms_pdf, treat as extra note
+      if (step === "forms_auth" || step === "forms_pdf") {
+        setExtraNotes((prev) => [...prev, text]);
+        addMessage("bot", "Got it.");
+        return;
+      }
+
+      return;
+    }
+
+    // =========================
+    // DEFAULT MODE (estimate-first)
+    // =========================
+    if (step === "help") {
+      const i = detectIntent(text);
+      setIntent(i);
+      setHelpSummary(text);
+
+      addMessage("bot", "Got it. What’s your name?");
+      setStep("name");
+      return;
+    }
+
+    if (step === "name") {
+  setCustomerName(text);
+
+  if (intent === "estimate") {
+    addMessage(
+      "bot",
+      tr(`Thanks, ${text}. One quick question to help us get started — do you have the VIN? (Typing it or a photo works.)`, `Gracias, ${text}. Una pregunta rápida para empezar — ¿tienes el VIN? (Puedes escribirlo o subir una foto.)`)
+    );
+    setStep("estimate_haveVin");
+    return;
+  }
+
+  // ✅ accident / insurance: start the accident branch instead of instant handoff
+  if (intent === "accident" || intent === "insurance") {
+    addMessage("bot", tr(`Thanks, ${text}. First — is the car safe to drive right now? (Yes / No / Not sure)`, `Gracias, ${text}. Primero — ¿el carro es seguro para manejar ahora mismo? (Sí / No / No estoy seguro/a)`));
+    setStep("accident_safeToDrive");
+    return;
+  }
+
+  addMessage("bot", `Thanks, ${text}. I’m going to connect you with the manager next.`);
+  setStep("done");
+  return;
+}
+    if (step === "accident_safeToDrive") {
+      const parsed = parseYesNoNotSure(text);
+      const ans = parsed === "unknown" ? "not_sure" : parsed;
+
+      setExtraNotes((prev) => [...prev, `Accident: safe_to_drive=${ans}`]);
+      addMessage("bot", "Got it.");
+
+      if (ans === "yes") {
+        setStep("accident_exchangedInfo");
+        addMessage("bot", "Did you exchange insurance information? (Yes/No)");
+        return;
+      }
+
+      // Not safe OR not sure → tow question
+      addMessage(
+        "bot",
+        ans === "not_sure"
+          ? "No worries — if you’re not sure, it’s best to play it safe. Do you need a tow right now? (Yes/No/Not sure)"
+          : "Do you need a tow right now? (Yes/No/Not sure)"
+      );
+      setStep("accident_needTowNow");
+      return;
+    }
+
+    if (step === "accident_needTowNow") {
+      const parsed = parseYesNoNotSure(text);
+      const ans = parsed === "unknown" ? "not_sure" : parsed;
+
+      setExtraNotes((prev) => [...prev, `Accident: tow_needed_now=${ans}`]);
+      addMessage("bot", "Got it.");
+
+      if (ans === "yes") {
+        askUploadsThenCallback("Got it — we’ll help you with a tow. I’m going to connect you with the manager now.");
+        return;
+      }
+
+      if (ans === "not_sure") {
+        addMessage("bot", "Want to speak to the manager now so we can figure out if a tow is needed? (Yes/No)");
+        setStep("accident_towUnsureConnect");
+        return;
+      }
+
+      // No tow → continue the accident flow
+      addMessage("bot", "Okay — if you ever end up needing a tow, we can help. Next question:");
+      setStep("accident_exchangedInfo");
+      addMessage("bot", "Did you exchange insurance information? (Yes/No)");
+      return;
+    }
+
+    if (step === "accident_towUnsureConnect") {
+      const parsed = parseYesNoNotSure(text);
+      const ans = parsed === "unknown" ? "not_sure" : parsed;
+
+      setExtraNotes((prev) => [...prev, `Accident: tow_unsure_connect=${ans}`]);
+      addMessage("bot", "Got it.");
+
+      if (ans === "yes") {
+        askUploadsThenCallback("No problem — I’m going to connect you with the manager so we can figure this out together.");
+        return;
+      }
+
+      addMessage("bot", "No problem. Next question:");
+      setStep("accident_exchangedInfo");
+      addMessage("bot", "Did you exchange insurance information? (Yes/No)");
+      return;
+    }
+
+    if (step === "accident_exchangedInfo") {
+      const ans = parseYesNoNotSure(text);
+      if (ans === "unknown" || ans === "not_sure") {
+        addMessage("bot", 'Please reply "Yes" or "No". Did you exchange insurance information?');
+        return;
+      }
+      setExtraNotes((prev) => [...prev, `Accident: exchanged_info=${ans}`]);
+      addMessage("bot", "Were police on scene or did you get a police report? (Yes / No)");
+      setStep("accident_policeReport");
+      return;
+    }
+
+    if (step === "accident_policeReport") {
+      const ans = parseYesNoNotSure(text);
+      if (ans === "unknown" || ans === "not_sure") {
+        addMessage("bot", 'Please reply "Yes" or "No". Police report?');
+        return;
+      }
+      setExtraNotes((prev) => [...prev, `Accident: police_report=${ans}`]);
+      addMessage("bot", "Did you take photos of the vehicles/damage? (Yes / No)");
+      setStep("accident_photosTaken");
+      return;
+    }
+
+    if (step === "accident_photosTaken") {
+      const ans = parseYesNoNotSure(text);
+      if (ans === "unknown" || ans === "not_sure") {
+        addMessage("bot", 'Please reply "Yes" or "No". Photos taken?');
+        return;
+      }
+      setExtraNotes((prev) => [...prev, `Accident: photos_taken=${ans}`]);
+      addMessage("bot", "Do you have full coverage / collision coverage? (Yes / No / Not sure)");
+      setStep("accident_fullCoverage");
+      return;
+    }
+
+    if (step === "accident_fullCoverage") {
+      const ans = parseYesNoNotSure(text);
+      if (ans === "unknown") {
+        addMessage("bot", 'Please reply "Yes", "No", or "Not sure". Do you have full coverage/collision?');
+        return;
+      }
+      setExtraNotes((prev) => [...prev, `Accident: full_coverage=${ans}`]);
+
+      // If NO coverage -> treat as out-of-pocket estimate flow
+      if (ans === "no") {
+        addMessage("bot", "Got it — we’ll treat this as out-of-pocket for now.");
+        setIntent("estimate");
+        addMessage("bot", tr("Do you have photos of the damage you can share?", "¿Tienes fotos del daño que puedas compartir?"));
+        setStep("estimate_havePhotos");
+        return;
+      }
+
+      addMessage("bot", "Have you contacted your insurance yet? (Yes / No)");
+      setStep("accident_contactedInsurance");
+      return;
+    }
+
+    if (step === "accident_contactedInsurance") {
+      const ans = parseYesNoNotSure(text);
+      if (ans === "unknown" || ans === "not_sure") {
+        addMessage("bot", 'Please reply "Yes" or "No". Have you contacted your insurance yet?');
+        return;
+      }
+      setExtraNotes((prev) => [...prev, `Accident: contacted_insurance=${ans}`]);
+
+      if (ans === "yes") {
+        askUploadsThenCallback("Great, you are ready to talk to the shop manager who can walk you through the rest of the process.");
+        return;
+      }
+
+      addMessage("bot", "Would you like the shop to be your designated representative and contact the insurer together? (Yes / No / Not sure)");
+      setStep("accident_shopRep");
+      return;
+    }
+
+    if (step === "accident_shopRep") {
+      const ans = parseYesNoNotSure(text);
+      if (ans === "unknown") {
+        addMessage("bot", 'Please reply "Yes", "No", or "Not sure". Should we contact the insurer together as your representative?');
+        return;
+      }
+      setExtraNotes((prev) => [...prev, `Accident: shop_rep=${ans}`]);
+
+      if (ans === "yes") {
+        askUploadsThenCallback("Perfect — the manager will help you contact your insurer and handle the next steps with you.");
+        return;
+      }
+
+      if (ans === "not_sure") {
+        askUploadsThenCallback("No worries — the manager can explain what a designated representative means and help you decide.");
+        return;
+      }
+
+      // no
+      askUploadsThenCallback("No problem — the manager can still guide you on the best next steps.");
+      return;
+    }
+
+
+
+    if (step === "estimate_haveVin") {
+      const ans = interpretHaveVinAnswer(text);
+      setHaveVin(ans);
+
+      if (ans === "yes") {
+        addMessage("bot", "Great. If you have the VIN handy, you can type it here. If you only have a photo, that’s perfectly fine as well. You can also say “skip”.");
+        setStep("estimate_vinValue");
+        return;
+      }
+
+      if (ans === "no") {
+        addMessage("bot", "No problem at all — we can still help without it.");
+        addMessage("bot", tr("Do you have photos of the damage you can share?", "¿Tienes fotos del daño que puedas compartir?"));
+        setStep("estimate_havePhotos");
+        return;
+      }
+
+      addMessage("bot", "That’s okay — it helps if you have it, but it isn’t required.");
+      addMessage("bot", tr("Do you have photos of the damage you can share?", "¿Tienes fotos del daño que puedas compartir?"));
+      setStep("estimate_havePhotos");
+      return;
+    }
+
+    if (step === "estimate_vinValue") {
+      const lower = text.toLowerCase();
+
+      if (lower.includes("skip")) {
+        addMessage("bot", "No problem.");
+        addMessage("bot", tr("Do you have photos of the damage you can share?", "¿Tienes fotos del daño que puedas compartir?"));
+        setStep("estimate_havePhotos");
+        return;
+      }
+
+      if (looksLikeVin(text)) {
+        const cleaned = text.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+        setVinValue(cleaned);
+        addMessage("bot", tr("Thank you.", "Gracias."));
+        addMessage("bot", tr("Do you have photos of the damage you can share?", "¿Tienes fotos del daño que puedas compartir?"));
+        setStep("estimate_havePhotos");
+        return;
+      }
+
+      setVinValue(text);
+      addMessage("bot", tr("Got it — we can confirm that later.", "Entendido — podemos confirmarlo más adelante."));
+      addMessage("bot", tr("Do you have photos of the damage you can share?", "¿Tienes fotos del daño que puedas compartir?"));
+      setStep("estimate_havePhotos");
+      return;
+    }
+
+    if (step === "estimate_havePhotos") {
+      const ans = interpretHavePhotosAnswer(text);
+      setHavePhotos(ans);
+
+      if (ans === "yes") {
+        addMessage("bot", "Perfect. Please upload any photos you have — damage photos and/or a VIN photo are both helpful.");
+      } else if (ans === "maybe") {
+        addMessage("bot", "No worries — if you can grab a couple photos when you get a chance, it helps a lot.");
+        addMessage("bot", "If you have any photos now, you can upload them here. If not, you can skip.");
+      } else {
+        addMessage("bot", "That’s totally fine — you can skip for now and add photos later.");
+      }
+
+      addMessage("bot", tr("Before we continue, can you briefly tell me how the damage happened?", "Antes de continuar, ¿puedes decirme brevemente cómo ocurrió el daño?"));
+      setStep("estimate_damageHow");
+      return;
+    }
+
+    if (step === "estimate_damageHow") {
+      const lower = text.trim().toLowerCase();
+      const isSkip = lower === "skip" || lower === "saltar";
+
+      if (lower && !isSkip) {
+        setExtraNotes((prev) => [...prev, `Estimate: how_damage_happened=${text.trim()}`]);
+      }
+
+      addMessage(
+        "bot",
+        tr(
+          "Thanks — if you have any photos, you can upload them here now (optional).",
+          "Gracias — si tienes fotos, puedes subirlas aquí ahora (opcional)."
+        )
+      );
+      setStep("estimate_upload");
+      return;
+    }
+
+    if (step === "estimate_upload") {
+      setExtraNotes((prev) => [...prev, text]);
+      addMessage("bot", "Got it — thank you.");
+      if (uploads.length > 0) addMessage("bot", "Whenever you’re ready, press Continue.");
+      return;
+    }
+
+    if (step === "callback_number") {
+      const lower = text.toLowerCase();
+
+      if (lower.includes("skip")) {
+        setCallbackNumber("");
+        addMessage("bot", "No problem.");
+        enterHandoffConnecting();
+        return;
+      }
+
+      if (!parsePhoneOk(text)) {
+        setExtraNotes((prev) => [...prev, text]);
+        addMessage("bot", "Got it — thank you.");
+        addMessage("bot", 'And what’s the best phone number to call or text you back? (10 digits, or type “skip”.)');
+        return;
+      }
+
+      const pretty = formatPhone(normalizePhone(text));
+      setCallbackNumber(pretty);
+
+      addMessage("bot", `Perfect — thank you. We’ll use ${pretty} if we need to reach you.`);
+      enterHandoffConnecting();
+      return;
+    }
+
+    if (step === "done") {
+      if (handoffStageRef.current === "busy") {
+        addBotOnce("The manager is not available at the moment, but will reach out as soon as possible.");
+        return;
+      }
+
+      // default: keep them waiting while we connect
+      addBotOnce("Please hold while we connect you with the manager.");
+      return;
+    }
+  }
+
+  // =========================
+  // UI flags
+  // =========================
+  const showUploadPanel = step === "estimate_upload";
+
+  const showResumeBanner = !!prevStateRef.current;
+
+  const showManagerSummary =
+    managerMode && (step === "callback_number" || step === "done" || uploads.length > 0 || !!callbackNumber);
+
+  const showFormsClaimButtons = mode === "forms" && step === "forms_claimType";
+  const showFormsDeliveryButtons = mode === "forms" && step === "forms_delivery";
+
+  const showFormsDownloadPanel =
+    mode === "forms" && step === "forms_delivery" && formsDeliveryChoice === "download";
+
+  const showAuthPanel = mode === "forms" && step === "forms_auth";
+  const showInsuranceFormsPanel = mode === "forms" && step === "forms_pdf" && formsClaimType === "insurance";
+
+  const currentInsuranceForm = useMemo(() => {
+    if (!showInsuranceFormsPanel) return null;
+    if (formsPdfIndex >= INSURANCE_FORMS.length) return null;
+    return INSURANCE_FORMS[formsPdfIndex];
+  }, [showInsuranceFormsPanel, formsPdfIndex]);
+
+  const placeholder = useMemo(() => {
+    switch (step) {
+      case "help":
+        return 'Example: "I need an estimate"';
+      case "name":
+        return "Your name";
+case "accident_safeToDrive":
+case "accident_exchangedInfo":
+case "accident_policeReport":
+case "accident_photosTaken":
+case "accident_fullCoverage":
+case "accident_contactedInsurance":
+case "accident_shopRep":
+  return 'Example: "Yes" / "No" / "Not sure"';
+      case "estimate_haveVin":
+        return tr('Example: "Yes" / "No" / "I have a photo of it"', 'Ejemplo: "Sí" / "No" / "Tengo una foto"');
+      case "estimate_vinValue":
+        return tr('Type the VIN (or say "skip")', 'Escribe el VIN (o di "saltar")');
+      case "estimate_havePhotos":
+        return tr('Example: "Yes" / "Not yet"', 'Ejemplo: "Sí" / "Todavía no"');
+      case "estimate_damageHow":
+        return tr('Briefly describe how the damage happened (or type "skip")', 'Describe brevemente cómo ocurrió el daño (o escribe "saltar")');
+      case "estimate_upload":
+        return tr("Add any extra details here (optional)", "Agrega cualquier detalle extra aquí (opcional)");
+      case "forms_claimType":
+        return 'Type: "out of pocket" or "insurance"';
+      case "forms_delivery":
+        return 'Type: "fill" or "download"';
+      case "forms_notes":
+        return 'Type notes, or "skip"';
+      case "callback_number":
+        return "Best phone number (call or text)";
+      case "done":
+        return handoffStage === "busy" ? "Manager unavailable" : "Connecting…";
+      default:
+        return "Type here…";
+    }
+  }, [step, handoffStage]);
+
+  const inputDisabled = step === "done" && handoffStage === "connecting";
+
+  const quickReplies = useMemo(() => {
+    if (pendingMode) return [];
+    if (inputDisabled) return [];
+
+    // Avoid duplication with form-specific buttons/panels
+    if (
+      showFormsClaimButtons ||
+      showFormsDeliveryButtons ||
+      showFormsDownloadPanel ||
+      showAuthPanel ||
+      showInsuranceFormsPanel ||
+      showUploadPanel
+    ) {
+      return [];
+    }
+
+    switch (step) {
+      case "accident_safeToDrive":
+      case "accident_needTowNow":
+        return [tr("Yes", "Sí"), tr("No", "No"), tr("Not sure", "No estoy seguro/a")];
+      case "accident_towUnsureConnect":
+        return [tr("Yes", "Sí"), tr("No", "No")];
+      case "accident_exchangedInfo":
+      case "accident_policeReport":
+      case "accident_photosTaken":
+      case "accident_fullCoverage":
+      case "accident_contactedInsurance":
+        return [tr("Yes", "Sí"), tr("No", "No")];
+      case "accident_shopRep":
+        return [tr("Yes", "Sí"), tr("No", "No"), tr("Not sure", "No estoy seguro/a")];
+      case "estimate_haveVin":
+      case "estimate_havePhotos":
+        return [tr("Yes", "Sí"), tr("No", "No")];
+      default:
+        return [];
+    }
+  }, [
+    step,
+    pendingMode,
+    inputDisabled,
+    showFormsClaimButtons,
+    showFormsDeliveryButtons,
+    showFormsDownloadPanel,
+    showAuthPanel,
+    showInsuranceFormsPanel,
+    showUploadPanel,
+    tr,
+  ]);
+
+
+  return (
+    <>
+      {/* Concierge Bar */}
+      <div className="fixed inset-x-0 bottom-0 z-30 flex justify-center px-4 pb-4">
+        <button
+          type="button"
+          id="concierge-pill-button"
+          onClick={() => {
+            window.dispatchEvent(
+              new CustomEvent("concierge:open", { detail: { mode: "default", source: "pill" } })
+            );
+          }}
+          className="w-full max-w-xl rounded-full border border-yellow-400/80 bg-black/80 px-4 py-3 shadow-lg shadow-yellow-500/30 backdrop-blur-md flex items-center justify-center gap-2 text-sm md:text-base hover:border-yellow-300 hover:shadow-yellow-400/40 transition"
+        >
+          <span className="inline-flex h-2 w-2 rounded-full bg-yellow-400 shadow-[0_0_8px_rgba(250,204,21,0.9)]" />
+          <span className="font-medium tracking-wide flex items-center gap-1">
+            Concierge
+            <span className="text-yellow-400 drop-shadow-[0_0_6px_rgba(250,204,21,0.9)] font-bold text-lg leading-none">
+              +
+            </span>
+            — Talk to the Manager
+          </span>
+        </button>
+      </div>
+
+      {/* Drawer */}
+      {open && (
+        <div className="fixed inset-0 z-40" role="dialog" aria-modal="true">
+          {/* Backdrop */}
+          <button type="button" className="absolute inset-0 bg-black/70" onClick={close} aria-label="Close" />
+
+          {/* Panel */}
+          <div className="absolute inset-x-0 bottom-0 mx-auto w-full max-w-2xl px-4 pb-4">
+            {/* ✅ FLEX COLUMN + FIXED HEIGHT so nothing gets clipped */}
+            <div className="rounded-2xl border border-yellow-400/30 bg-black/90 shadow-xl shadow-yellow-500/20 backdrop-blur-md overflow-hidden flex flex-col h-[85vh]">
+              {/* Header */}
+              <div className="flex items-center justify-between px-5 py-4 border-b border-white/10 flex-shrink-0">
+                <div>
+                  <div className="text-white font-semibold tracking-wide">
+                    Concierge <span className="text-yellow-400 font-bold">PLUS</span>
+                  </div>
+                  <div className="text-white/70 text-xs">
+                    {mode === "forms" ? "Repair authorization forms" : "Quick chat — we’ll collect what we need step by step."}
+                  </div>
+                </div>
+
+                <div className="flex gap-2">
+                  {showResumeBanner && (
+                    <button
+                      type="button"
+                      onClick={resumePrevious}
+                      className="text-xs text-white/70 hover:text-white transition px-3 py-2 rounded-lg border border-white/10 hover:border-white/20"
+                      title="Return to your previous chat"
+                    >
+                      Resume
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => resetChat(mode)}
+                    className="text-xs text-white/70 hover:text-white transition px-3 py-2 rounded-lg border border-white/10 hover:border-white/20"
+                  >
+                    Reset
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={close}
+                    className="text-xs text-white/70 hover:text-white transition px-3 py-2 rounded-lg border border-white/10 hover:border-white/20"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+
+              {/* ✅ Scrollable body */}
+              <div ref={scrollBodyRef} className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+                {/* Ask-before-switch panel */}
+                {pendingMode && (
+                  <div className="rounded-2xl border border-yellow-400/25 bg-yellow-400/10 p-4">
+                    <div className="text-sm font-semibold text-white">
+                      {pendingMode === "forms" ? "Open Forms?" : "Switch topics?"}
+                    </div>
+                    <div className="mt-1 text-xs text-white/70">
+                      You’re in the middle of something. Do you want to switch now, or keep going?
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2 justify-end">
+                      <button
+                        type="button"
+                        onClick={() => handleSwitchChoice("keep")}
+                        className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs text-white/80 hover:bg-white/10 transition"
+                      >
+                        Keep going
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSwitchChoice("switch")}
+                        className="rounded-xl border border-yellow-400/60 bg-yellow-400/15 px-4 py-2 text-xs font-semibold text-white hover:border-yellow-300 hover:bg-yellow-400/20 transition"
+                      >
+                        {pendingMode === "forms" ? "Open Forms" : "Switch"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Chat */}
+                <div className="space-y-2">
+                  {messages.map((m, i) => (
+                    <div key={i} className={`flex ${m.from === "user" ? "justify-end" : "justify-start"}`}>
+                      <div
+                        className={[
+                          "max-w-[85%] rounded-2xl px-4 py-2 text-sm border whitespace-pre-line",
+                          m.from === "user"
+                            ? "bg-yellow-400/15 border-yellow-400/30 text-white"
+                            : "bg-black/40 border-white/10 text-white/90",
+                        ].join(" ")}
+                      >
+                        {m.text}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Quick replies (tap instead of typing) */}
+                {quickReplies.length > 0 && (
+                  <div className="flex flex-wrap gap-2 justify-end">
+                    {quickReplies.map((opt) => {
+                      const lower = opt.toLowerCase();
+                      const isPrimary = lower === "yes";
+                      const isMaybe = lower.includes("not");
+                      const cls = isPrimary
+                        ? "rounded-xl border border-yellow-400/60 bg-yellow-400/15 px-4 py-2 text-xs font-semibold text-white hover:border-yellow-300 hover:bg-yellow-400/20 transition"
+                        : isMaybe
+                        ? "rounded-xl border border-yellow-400/30 bg-yellow-400/5 px-4 py-2 text-xs text-white/90 hover:border-yellow-300/50 hover:bg-yellow-400/10 transition"
+                        : "rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs text-white/80 hover:bg-white/10 transition";
+
+                      return (
+                        <button key={opt} type="button" onClick={() => send(opt)} className={cls}>
+                          {opt}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Quick buttons: claim type */}
+                {showFormsClaimButtons && (
+                  <div className="flex flex-wrap gap-2 justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        addMessage("user", "Insurance");
+                        setFormsClaimType("insurance");
+                        showFormsList("insurance");
+                      }}
+                      className="rounded-xl border border-yellow-400/60 bg-yellow-400/15 px-4 py-2 text-xs font-semibold text-white hover:border-yellow-300 hover:bg-yellow-400/20 transition"
+                    >
+                      Insurance Claim
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        addMessage("user", "Out of pocket");
+                        setFormsClaimType("out_of_pocket");
+                        showFormsList("out_of_pocket");
+                      }}
+                      className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs text-white/80 hover:bg-white/10 transition"
+                    >
+                      Out of Pocket
+                    </button>
+                  </div>
+                )}
+
+                {/* Quick buttons: delivery choice */}
+                {showFormsDeliveryButtons && (
+                  <div className="flex flex-wrap gap-2 justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFormsDeliveryChoice("fill");
+                        addMessage("user", "Fill online");
+                        addMessage("bot", "Perfect — fill it out below and sign with your finger/mouse.");
+                        setStep("forms_auth");
+                      }}
+                      className="rounded-xl border border-yellow-400/60 bg-yellow-400/15 px-4 py-2 text-xs font-semibold text-white hover:border-yellow-300 hover:bg-yellow-400/20 transition"
+                    >
+                      Fill online
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFormsDeliveryChoice("download");
+                        addMessage("user", "Download a copy");
+                        addMessage("bot", "No problem — use the buttons below to download the forms.");
+                        addMessage("bot", 'When you’re done, click "Continue".');
+                      }}
+                      className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs text-white/80 hover:bg-white/10 transition"
+                    >
+                      Download
+                    </button>
+                  </div>
+                )}
+
+                {/* Download panel */}
+                {showFormsDownloadPanel && (
+                  <div className="rounded-2xl border border-white/10 bg-black/30 p-4 space-y-3">
+                    <div className="text-sm text-white font-medium">Download forms</div>
+                    <div className="text-xs text-white/60">
+                      These are fillable PDFs. You can type directly in them in most browsers.
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <a
+                        href={AUTH_FORM_PDF_URL}
+                        download
+                        className="rounded-xl border border-yellow-400/60 bg-yellow-400/15 px-4 py-2 text-xs font-semibold text-white hover:border-yellow-300 hover:bg-yellow-400/20 transition"
+                      >
+                        Repair Authorization
+                      </a>
+
+                      {formsClaimType === "insurance" &&
+                        INSURANCE_FORMS.map((p) => (
+                          <a
+                            key={p.key}
+                            href={p.blankUrl}
+                            download
+                            className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs text-white/80 hover:bg-white/10 transition"
+                          >
+                            {p.title}
+                          </a>
+                        ))}
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          addMessage("bot", "Perfect — any notes for the shop? (Optional — type “skip”)");
+                          setStep("forms_notes");
+                        }}
+                        className="rounded-xl border border-yellow-400/60 bg-yellow-400/15 px-4 py-2 text-xs font-semibold text-white hover:border-yellow-300 hover:bg-yellow-400/20 transition"
+                      >
+                        Continue
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Repair Authorization web form */}
+                {showAuthPanel && (
+                  <div className="rounded-2xl border border-white/10 bg-black/30 p-4 space-y-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm text-white font-medium">Repair Authorization</div>
+                        <div className="text-xs text-white/60">
+                          Fill this out, sign, then press <span className="text-white/80">Submit & Generate PDF</span>.
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => openInNewTab(AUTH_FORM_PDF_URL)}
+                        className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs text-white/80 hover:bg-white/10 transition"
+                      >
+                        View blank PDF
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="space-y-3">
+                        <label className="block">
+                          <div className="text-xs text-white/60 mb-1">Full Name</div>
+                          <input
+                            ref={fullNameRef}
+                            value={authForm.fullName}
+                            onChange={(e) => setAuthForm((p) => ({ ...p, fullName: e.target.value }))}
+                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
+                            placeholder="Full name"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="text-xs text-white/60 mb-1">Address</div>
+                          <input
+                            value={authForm.address}
+                            onChange={(e) => setAuthForm((p) => ({ ...p, address: e.target.value }))}
+                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
+                            placeholder="Street address"
+                          />
+                        </label>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <label className="block">
+                            <div className="text-xs text-white/60 mb-1">Town/City</div>
+                            <input
+                              value={authForm.townCity}
+                              onChange={(e) => setAuthForm((p) => ({ ...p, townCity: e.target.value }))}
+                              className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
+                              placeholder="Town/City"
+                            />
+                          </label>
+
+                          <label className="block">
+                            <div className="text-xs text-white/60 mb-1">Zip</div>
+                            <input
+                              value={authForm.zip}
+                              onChange={(e) => setAuthForm((p) => ({ ...p, zip: e.target.value }))}
+                              className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
+                              placeholder="Zip code"
+                            />
+                          </label>
+                        </div>
+
+                        <label className="block">
+                          <div className="text-xs text-white/60 mb-1">Phone</div>
+                          <input
+                            value={authForm.phone}
+                            onChange={(e) => setAuthForm((p) => ({ ...p, phone: e.target.value }))}
+                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
+                            placeholder="(555) 555-5555"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="text-xs text-white/60 mb-1">Email</div>
+                          <input
+                            value={authForm.email}
+                            onChange={(e) => setAuthForm((p) => ({ ...p, email: e.target.value }))}
+                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
+                            placeholder="email@example.com"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="space-y-3">
+                        <div className="grid grid-cols-2 gap-3">
+                          <label className="block">
+                            <div className="text-xs text-white/60 mb-1">Year</div>
+                            <input
+                              value={authForm.year}
+                              onChange={(e) => setAuthForm((p) => ({ ...p, year: e.target.value }))}
+                              className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
+                              placeholder="YYYY"
+                            />
+                          </label>
+
+                          <label className="block">
+                            <div className="text-xs text-white/60 mb-1">Make</div>
+                            <input
+                              value={authForm.make}
+                              onChange={(e) => setAuthForm((p) => ({ ...p, make: e.target.value }))}
+                              className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
+                              placeholder="Make"
+                            />
+                          </label>
+                        </div>
+
+                        <label className="block">
+                          <div className="text-xs text-white/60 mb-1">Model</div>
+                          <input
+                            value={authForm.model}
+                            onChange={(e) => setAuthForm((p) => ({ ...p, model: e.target.value }))}
+                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
+                            placeholder="Model"
+                          />
+                        </label>
+
+                        <label className="block">
+                          <div className="text-xs text-white/60 mb-1">Plate #</div>
+                          <input
+                            value={authForm.plate}
+                            onChange={(e) => setAuthForm((p) => ({ ...p, plate: e.target.value }))}
+                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
+                            placeholder="Plate"
+                          />
+                        </label>
+
+                        {/* Click-to-read gate (must open once) */}
+                        <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+                          <button
+                            type="button"
+                            onClick={toggleAuthInfo}
+                            className="text-xs text-yellow-300 underline underline-offset-4 hover:text-yellow-200 transition"
+                          >
+                            {authInfoOpen ? "Hide" : "Click here: Please read first"}
+                          </button>
+
+                          {authInfoOpen && (
+                            <div className="mt-2 space-y-2">
+                              <div className="text-[11px] leading-relaxed text-white/70">
+                                This Repair Authorization gives Ultimate Auto Body permission to begin the repair process and includes important terms.
+                                Please review the form before agreeing.
+                              </div>
+
+                              <div>
+                                <button
+                                  type="button"
+                                  onClick={() => openInNewTab(AUTH_FORM_PDF_URL)}
+                                  className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-xs text-white/80 hover:bg-white/10 transition"
+                                >
+                                  Open Repair Authorization PDF
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {!authExplained && (
+                            <div className="mt-2 text-[11px] text-white/50">
+                              Open this once to unlock the authorization checkbox.
+                            </div>
+                          )}
+                        </div>
+
+                        <label
+                          className={[
+                            "flex items-start gap-3 rounded-xl border border-white/10 bg-black/30 p-3 select-none",
+                            authExplained ? "cursor-pointer" : "opacity-50 cursor-not-allowed",
+                          ].join(" ")}
+                        >
+                          <input
+                            type="checkbox"
+                            disabled={!authExplained}
+                            checked={authForm.agree}
+                            onChange={(e) => setAuthForm((p) => ({ ...p, agree: e.target.checked }))}
+                            className="mt-1"
+                          />
+                          <div className="text-xs text-white/80">
+                            I authorize Ultimate Auto Body to perform repairs and acknowledge the terms on the form.
+                          </div>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-white/10 bg-black/25 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <div className="text-xs text-white/60">Signature</div>
+                          <div className="text-[11px] text-white/45">
+                            Sign below with mouse/finger. (Canvas is white so you can actually see the ink.)
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={clearSignature}
+                          className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs text-white/80 hover:bg-white/10 transition"
+                        >
+                          Clear
+                        </button>
+                      </div>
+
+                      {/* ✅ wrap ref so canvas can measure width */}
+                      <div ref={sigWrapRef} className="mt-3 overflow-hidden rounded-xl border border-white/10 bg-white">
+                        <canvas
+                          ref={sigCanvasRef}
+                          onPointerDown={sigStart}
+                          onPointerMove={sigMove}
+                          onPointerUp={sigEnd}
+                          onPointerCancel={sigEnd}
+                          className="block w-full"
+                        />
+                      </div>
+
+                      <div className="mt-2 text-[11px] text-white/60">
+                        {sigHasInk ? "Signature captured ✅" : "No signature yet"}
+                      </div>
+                    </div>
+
+                    {authError && (
+                      <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                        {authError}
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        disabled={authSubmitting}
+                        onClick={submitRepairAuthorization}
+                        className="rounded-xl border border-yellow-400/60 bg-yellow-400/15 px-5 py-2.5 text-sm font-semibold text-white hover:border-yellow-300 hover:bg-yellow-400/20 transition disabled:opacity-60"
+                      >
+                        {authSubmitting ? "Generating…" : "Submit & Generate PDF"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Insurance forms panel (same UX as Repair Authorization) */}
+                {showInsuranceFormsPanel && (
+                  <div className="rounded-2xl border border-white/10 bg-black/30 p-4 space-y-3">
+                    {currentInsuranceForm ? (
+                      <>
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-sm text-white font-medium">{currentInsuranceForm.title}</div>
+                            <div className="text-xs text-white/60">{currentInsuranceForm.plain}</div>
+                          </div>
+
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => openInNewTab(currentInsuranceForm.blankUrl)}
+                              className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-xs text-white/80 hover:bg-white/10 transition"
+                            >
+                              Download blank
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* What is this? (must open at least once before agree unlocks) */}
+                        <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+                          <button
+                            type="button"
+                            onClick={() => toggleInsuranceInfo(currentInsuranceForm.key as InsuranceFormKey)}
+                            className="text-xs text-yellow-300 underline underline-offset-4 hover:text-yellow-200 transition"
+                          >
+                            {insuranceInfoOpen[currentInsuranceForm.key as InsuranceFormKey] ? "Hide" : "Click here: Please read first"}
+                          </button>
+
+                          {insuranceInfoOpen[currentInsuranceForm.key as InsuranceFormKey] && (
+                            <div className="mt-2 whitespace-pre-wrap text-[11px] leading-relaxed text-white/70">
+                              {currentInsuranceForm.official}
+                            </div>
+                          )}
+
+                          {!insuranceExplained[currentInsuranceForm.key as InsuranceFormKey] && (
+                            <div className="mt-2 text-[11px] text-white/50">
+                              Open this once to unlock the agreement checkbox.
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Fields */}
+                        {currentInsuranceForm.kind === "direction_to_pay" && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                              <div className="text-xs text-white/60 mb-1">Customer name</div>
+                              <input
+                                value={dtpForm.fullName}
+                                onChange={(e) => setDtpForm((p) => ({ ...p, fullName: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="Full name"
+                              />
+                            </div>
+
+                            <div>
+                              <div className="text-xs text-white/60 mb-1">Insurance company</div>
+                              <input
+                                value={dtpForm.insurerName}
+                                onChange={(e) => setDtpForm((p) => ({ ...p, insurerName: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="Company name"
+                              />
+                            </div>
+
+                            <div>
+                              <div className="text-xs text-white/60 mb-1">Vehicle year</div>
+                              <input
+                                value={dtpForm.year}
+                                onChange={(e) => setDtpForm((p) => ({ ...p, year: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="YYYY"
+                              />
+                            </div>
+
+                            <div>
+                              <div className="text-xs text-white/60 mb-1">Vehicle make</div>
+                              <input
+                                value={dtpForm.make}
+                                onChange={(e) => setDtpForm((p) => ({ ...p, make: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="Make"
+                              />
+                            </div>
+
+                            <div className="sm:col-span-2">
+                              <div className="text-xs text-white/60 mb-1">Vehicle model</div>
+                              <input
+                                value={dtpForm.model}
+                                onChange={(e) => setDtpForm((p) => ({ ...p, model: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="Model"
+                              />
+                            </div>
+
+                            <div className="sm:col-span-2">
+                              <div className="text-xs text-white/60 mb-1">Claim # (optional)</div>
+                              <input
+                                value={dtpForm.claimNumber}
+                                onChange={(e) => setDtpForm((p) => ({ ...p, claimNumber: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="Claim number"
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {currentInsuranceForm.kind === "designated_representative" && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                              <div className="text-xs text-white/60 mb-1">Customer name</div>
+                              <input
+                                value={drForm.fullName}
+                                onChange={(e) => setDrForm((p) => ({ ...p, fullName: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="Full name"
+                              />
+                            </div>
+
+                            <div>
+                              <div className="text-xs text-white/60 mb-1">Insurance company</div>
+                              <input
+                                value={drForm.insurerName}
+                                onChange={(e) => setDrForm((p) => ({ ...p, insurerName: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="Company name"
+                              />
+                            </div>
+
+                            <div className="sm:col-span-2">
+                              <div className="text-xs text-white/60 mb-1">Claim # (optional)</div>
+                              <input
+                                value={drForm.claimNumber}
+                                onChange={(e) => setDrForm((p) => ({ ...p, claimNumber: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="Claim number"
+                              />
+                            </div>
+
+                            <div>
+                              <div className="text-xs text-white/60 mb-1">Vehicle year</div>
+                              <input
+                                value={drForm.year}
+                                onChange={(e) => setDrForm((p) => ({ ...p, year: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="YYYY"
+                              />
+                            </div>
+
+                            <div>
+                              <div className="text-xs text-white/60 mb-1">Vehicle make</div>
+                              <input
+                                value={drForm.make}
+                                onChange={(e) => setDrForm((p) => ({ ...p, make: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="Make"
+                              />
+                            </div>
+
+                            <div className="sm:col-span-2">
+                              <div className="text-xs text-white/60 mb-1">Vehicle model</div>
+                              <input
+                                value={drForm.model}
+                                onChange={(e) => setDrForm((p) => ({ ...p, model: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="Model"
+                              />
+                            </div>
+
+                            <div className="sm:col-span-2">
+                              <div className="text-xs text-white/60 mb-1">Plate # (optional)</div>
+                              <input
+                                value={drForm.plate}
+                                onChange={(e) => setDrForm((p) => ({ ...p, plate: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="Plate"
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {currentInsuranceForm.kind === "estimate_dismantling" && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="sm:col-span-2">
+                              <div className="text-xs text-white/60 mb-1">Customer name</div>
+                              <input
+                                value={estForm.fullName}
+                                onChange={(e) => setEstForm((p) => ({ ...p, fullName: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="Full name"
+                              />
+                            </div>
+
+                            <div>
+                              <div className="text-xs text-white/60 mb-1">Vehicle year</div>
+                              <input
+                                value={estForm.year}
+                                onChange={(e) => setEstForm((p) => ({ ...p, year: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="YYYY"
+                              />
+                            </div>
+
+                            <div>
+                              <div className="text-xs text-white/60 mb-1">Vehicle make</div>
+                              <input
+                                value={estForm.make}
+                                onChange={(e) => setEstForm((p) => ({ ...p, make: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="Make"
+                              />
+                            </div>
+
+                            <div className="sm:col-span-2">
+                              <div className="text-xs text-white/60 mb-1">Vehicle model</div>
+                              <input
+                                value={estForm.model}
+                                onChange={(e) => setEstForm((p) => ({ ...p, model: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="Model"
+                              />
+                            </div>
+
+                            <div className="sm:col-span-2">
+                              <div className="text-xs text-white/60 mb-1">Plate # (optional)</div>
+                              <input
+                                value={estForm.plate}
+                                onChange={(e) => setEstForm((p) => ({ ...p, plate: e.target.value }))}
+                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                placeholder="Plate"
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Signature preview */}
+                        <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
+                          <div className="text-xs text-white/70 font-medium">Signature on file</div>
+                          <div className="text-[11px] text-white/50">
+                            We’ll apply your signature from the Repair Authorization to this form.
+                          </div>
+
+                          <div className="mt-2 flex items-center gap-3">
+                            {authForm.signatureDataUrl ? (
+                              <img
+                                src={authForm.signatureDataUrl}
+                                alt="Signature"
+                                className="h-12 w-auto max-w-full rounded-md bg-white p-1"
+                              />
+                            ) : (
+                              <div className="text-[11px] text-red-200">No signature found.</div>
+                            )}
+
+                            <div className="text-[11px] text-white/50">
+                              Date: <span className="text-white/70">{yyyyMmDd()}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Agreement */}
+                        <div className="space-y-2">
+                          {currentInsuranceForm.kind === "direction_to_pay" && (
+                            <label className="flex items-start gap-2 text-xs text-white/80">
+                              <input
+                                type="checkbox"
+                                disabled={!insuranceExplained.direction_to_pay}
+                                checked={dtpForm.agree}
+                                onChange={(e) => setDtpForm((p) => ({ ...p, agree: e.target.checked }))}
+                                className="mt-0.5"
+                              />
+                              <span>
+                                I understand and agree — and I authorize Ultimate Auto Body to apply my Repair Authorization signature
+                                to this form.
+                              </span>
+                            </label>
+                          )}
+
+                          {currentInsuranceForm.kind === "designated_representative" && (
+                            <label className="flex items-start gap-2 text-xs text-white/80">
+                              <input
+                                type="checkbox"
+                                disabled={!insuranceExplained.designated_representative}
+                                checked={drForm.agree}
+                                onChange={(e) => setDrForm((p) => ({ ...p, agree: e.target.checked }))}
+                                className="mt-0.5"
+                              />
+                              <span>
+                                I understand and agree — and I authorize Ultimate Auto Body to apply my Repair Authorization signature
+                                to this form.
+                              </span>
+                            </label>
+                          )}
+
+                          {currentInsuranceForm.kind === "estimate_dismantling" && (
+                            <>
+                              <label className="flex items-start gap-2 text-xs text-white/80">
+                                <input
+                                  type="checkbox"
+                                  disabled={!insuranceExplained.estimate_dismantling}
+                                  checked={estForm.agree}
+                                  onChange={(e) => setEstForm((p) => ({ ...p, agree: e.target.checked }))}
+                                  className="mt-0.5"
+                                />
+                                <span>
+                                  I understand and agree — and I authorize Ultimate Auto Body to apply my Repair Authorization signature
+                                  to this form.
+                                </span>
+                              </label>
+
+                              <label className="flex items-start gap-2 text-xs text-white/80">
+                                <input
+                                  type="checkbox"
+                                  disabled={!insuranceExplained.estimate_dismantling}
+                                  checked={estForm.notRepairAgree}
+                                  onChange={(e) => setEstForm((p) => ({ ...p, notRepairAgree: e.target.checked }))}
+                                  className="mt-0.5"
+                                />
+                                <span>I understand this authorizes an estimate/dismantling only — it is NOT an authorization to repair.</span>
+                              </label>
+                            </>
+                          )}
+                        </div>
+
+                        {insuranceError && (
+                          <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                            {insuranceError}
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-end gap-2 pt-1">
+                          <button
+                            type="button"
+                            disabled={insuranceSubmitting}
+                            onClick={submitCurrentInsuranceForm}
+                            className="rounded-xl border border-yellow-400/40 bg-yellow-400/10 px-4 py-2 text-xs text-white hover:border-yellow-300 hover:bg-yellow-400/20 transition disabled:opacity-60"
+                          >
+                            {insuranceSubmitting ? "Generating…" : "Generate & Download"}
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-sm text-white font-medium">All set ✅</div>
+                            <div className="text-xs text-white/60">
+                              You finished the insurance forms. Want the full packet too?
+                            </div>
+                          </div>
+
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => openInNewTab(INSURANCE_PACKET_BLANK_URL)}
+                              className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-xs text-white/80 hover:bg-white/10 transition"
+                            >
+                              Blank packet
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-end gap-2 pt-1">
+                          <button
+                            type="button"
+                            disabled={insuranceSubmitting}
+                            onClick={downloadFullPacketAll4}
+                            className="rounded-xl border border-yellow-400/40 bg-yellow-400/10 px-4 py-2 text-xs text-white hover:border-yellow-300 hover:bg-yellow-400/20 transition disabled:opacity-60"
+                          >
+                            {insuranceSubmitting ? "Generating…" : "Download full packet (All 4)"}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={continueToNotes}
+                            className="rounded-xl border border-yellow-400/40 px-4 py-2 text-xs text-white hover:border-yellow-300 hover:bg-yellow-400/20 transition"
+                          >
+                            Continue
+                          </button>
+                        </div>
+
+                        {insuranceError && (
+                          <div className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                            {insuranceError}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* Upload Panel (estimate flow only) */}
+                {showUploadPanel && (
+                  <div className="rounded-2xl border border-white/10 bg-black/30 p-4 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm text-white font-medium">Upload photos or documents (optional)</div>
+                        <div className="text-xs text-white/60">Photos are best, but you can also upload PDFs or other files.</div>
+                      </div>
+
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="rounded-xl border border-yellow-400/40 bg-yellow-400/10 px-4 py-2 text-xs text-white hover:border-yellow-300/60 transition"
+                        >
+                          Add files
+                        </button>
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          multiple
+                          accept="*/*"
+                          onChange={handleFilesChosen}
+                          className="hidden"
+                        />
+                      </div>
+                    </div>
+
+                    {uploads.length > 0 && (
+                      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                        {uploads.map((f, idx) => (
+                          <div key={`${f.name}-${idx}`} className="relative rounded-xl overflow-hidden border border-white/10 bg-black/40">
+                            {f.type?.startsWith("image/") ? (
+                              <>
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={URL.createObjectURL(f)}
+                                  alt={f.name}
+                                  className="h-24 w-full object-cover"
+                                  onLoad={(e) => {
+                                    const src = (e.currentTarget as HTMLImageElement).src;
+                                    setTimeout(() => URL.revokeObjectURL(src), 1500);
+                                  }}
+                                />
+                              </>
+                            ) : (
+                              <div className="h-24 w-full flex flex-col items-center justify-center gap-1 p-2 text-center">
+                                <div className="text-[10px] text-white/80 break-words">{f.name}</div>
+                                <div className="text-[9px] text-white/45">{f.type || "file"}</div>
+                              </div>
+                            )}
+<button
+                              type="button"
+                              onClick={() => removeUpload(idx)}
+                              className="absolute top-1 right-1 rounded-full border border-white/20 bg-black/70 px-2 py-1 text-[10px] text-white hover:bg-black transition"
+                              aria-label={`Remove ${f.name}`}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={skipUpload}
+                        className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs text-white/80 hover:bg-white/10 transition"
+                      >
+                        Skip
+                      </button>
+                      <button
+                        type="button"
+                        onClick={continueFromUpload}
+                        className="rounded-xl border border-yellow-400/60 bg-yellow-400/15 px-4 py-2 text-xs font-semibold text-white hover:border-yellow-300 hover:bg-yellow-400/20 transition"
+                      >
+                        Continue
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ✅ Footer stays visible (so Send button never gets cut off either) */}
+              <div className="flex-shrink-0 border-t border-white/10 px-5 py-4 bg-black/80">
+
+<div className="flex gap-2">
+
+  <input
+    value={input}
+    onChange={(e) => setInput(e.target.value)}
+    onKeyDown={(e) => !inputDisabled && e.key === "Enter" && send()}
+    placeholder={placeholder}
+    disabled={inputDisabled}
+    className="flex-1 rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
+  />
+  <button
+    type="button"
+    onClick={send}
+    disabled={inputDisabled}
+    className="rounded-xl border border-yellow-400/60 bg-yellow-400/15 px-4 py-3 text-sm font-semibold text-white hover:border-yellow-300 hover:bg-yellow-400/20 transition disabled:opacity-60 disabled:cursor-not-allowed"
+  >
+    Send
+  </button>
+</div>
+
+                <div className="mt-2 text-[11px] text-white/45">
+                  {mode === "forms"
+                    ? "Tip: In the insurance flow, after Repair Authorization you’ll be guided through the other 3 forms."
+                    : "Tip: Upload photos if you have them — it speeds things up."}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}

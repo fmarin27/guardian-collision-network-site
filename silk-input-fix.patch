@@ -1,0 +1,264 @@
+--- a/components/ConciergeBar.tsx
++++ b/components/ConciergeBar.tsx
+@@ -1,6 +1,6 @@
+ "use client";
+ 
+-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
++import { useCallback, useEffect, useId, useMemo, useRef, useState, type ChangeEvent } from "react";
+ 
+ import { collection, onSnapshot, orderBy, query, addDoc, serverTimestamp, doc, setDoc } from "firebase/firestore";
+ import { db } from "@/app/lib/firebase";
+@@ -446,6 +446,11 @@
+   // focus refs (nice UX)
+   const fullNameRef = useRef<HTMLInputElement | null>(null);
+ 
++  // Unique per mounted Concierge component instance (helps Safari/Silk autofill + focus)
++  const inputUid = useId();
++  const authId = (field: string) => `${inputUid}-auth-${field}`;
++  const insId = (field: string) => `${inputUid}-ins-${field}`;
++
+   // extra notes
+   const [extraNotes, setExtraNotes] = useState<string[]>([]);
+ 
+@@ -2721,9 +2726,14 @@
+                           <div className="text-xs text-white/60 mb-1">Full Name</div>
+                           <input
+                             ref={fullNameRef}
++                            id={authId("fullName")}
++                            name="fullName"
++                            type="text"
++                            autoComplete="name"
++                            inputMode="text"
+                             value={authForm.fullName}
+                             onChange={(e) => setAuthForm((p) => ({ ...p, fullName: e.target.value }))}
+-                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
++                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-base text-white outline-none focus:border-yellow-400/60"
+                             placeholder="Full name"
+                           />
+                         </label>
+@@ -2731,9 +2741,14 @@
+                         <label className="block">
+                           <div className="text-xs text-white/60 mb-1">Address</div>
+                           <input
++                            id={authId("address")}
++                            name="address"
++                            type="text"
++                            autoComplete="street-address"
++                            inputMode="text"
+                             value={authForm.address}
+                             onChange={(e) => setAuthForm((p) => ({ ...p, address: e.target.value }))}
+-                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
++                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-base text-white outline-none focus:border-yellow-400/60"
+                             placeholder="Street address"
+                           />
+                         </label>
+@@ -2742,9 +2757,14 @@
+                           <label className="block">
+                             <div className="text-xs text-white/60 mb-1">Town/City</div>
+                             <input
++                              id={authId("townCity")}
++                              name="townCity"
++                              type="text"
++                              autoComplete="address-level2"
++                              inputMode="text"
+                               value={authForm.townCity}
+                               onChange={(e) => setAuthForm((p) => ({ ...p, townCity: e.target.value }))}
+-                              className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
++                              className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-base text-white outline-none focus:border-yellow-400/60"
+                               placeholder="Town/City"
+                             />
+                           </label>
+@@ -2752,9 +2772,14 @@
+                           <label className="block">
+                             <div className="text-xs text-white/60 mb-1">Zip</div>
+                             <input
++                              id={authId("zip")}
++                              name="zip"
++                              type="text"
++                              autoComplete="postal-code"
++                              inputMode="numeric"
+                               value={authForm.zip}
+                               onChange={(e) => setAuthForm((p) => ({ ...p, zip: e.target.value }))}
+-                              className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
++                              className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-base text-white outline-none focus:border-yellow-400/60"
+                               placeholder="Zip code"
+                             />
+                           </label>
+@@ -2763,9 +2788,14 @@
+                         <label className="block">
+                           <div className="text-xs text-white/60 mb-1">Phone</div>
+                           <input
++                            id={authId("phone")}
++                            name="phone"
++                            type="tel"
++                            autoComplete="tel"
++                            inputMode="tel"
+                             value={authForm.phone}
+                             onChange={(e) => setAuthForm((p) => ({ ...p, phone: e.target.value }))}
+-                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
++                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-base text-white outline-none focus:border-yellow-400/60"
+                             placeholder="(555) 555-5555"
+                           />
+                         </label>
+@@ -2773,9 +2803,14 @@
+                         <label className="block">
+                           <div className="text-xs text-white/60 mb-1">Email</div>
+                           <input
++                            id={authId("email")}
++                            name="email"
++                            type="email"
++                            autoComplete="email"
++                            inputMode="email"
+                             value={authForm.email}
+                             onChange={(e) => setAuthForm((p) => ({ ...p, email: e.target.value }))}
+-                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
++                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-base text-white outline-none focus:border-yellow-400/60"
+                             placeholder="email@example.com"
+                           />
+                         </label>
+@@ -2786,9 +2821,14 @@
+                           <label className="block">
+                             <div className="text-xs text-white/60 mb-1">Year</div>
+                             <input
++                              id={authId("year")}
++                              name="year"
++                              type="text"
++                              autoComplete="off"
++                              inputMode="numeric"
+                               value={authForm.year}
+                               onChange={(e) => setAuthForm((p) => ({ ...p, year: e.target.value }))}
+-                              className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
++                              className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-base text-white outline-none focus:border-yellow-400/60"
+                               placeholder="YYYY"
+                             />
+                           </label>
+@@ -2796,9 +2836,14 @@
+                           <label className="block">
+                             <div className="text-xs text-white/60 mb-1">Make</div>
+                             <input
++                              id={authId("make")}
++                              name="make"
++                              type="text"
++                              autoComplete="off"
++                              inputMode="text"
+                               value={authForm.make}
+                               onChange={(e) => setAuthForm((p) => ({ ...p, make: e.target.value }))}
+-                              className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
++                              className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-base text-white outline-none focus:border-yellow-400/60"
+                               placeholder="Make"
+                             />
+                           </label>
+@@ -2809,7 +2854,7 @@
+                           <input
+                             value={authForm.model}
+                             onChange={(e) => setAuthForm((p) => ({ ...p, model: e.target.value }))}
+-                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
++                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-base text-white outline-none focus:border-yellow-400/60"
+                             placeholder="Model"
+                           />
+                         </label>
+@@ -2819,7 +2864,7 @@
+                           <input
+                             value={authForm.plate}
+                             onChange={(e) => setAuthForm((p) => ({ ...p, plate: e.target.value }))}
+-                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-sm text-white outline-none focus:border-yellow-400/60"
++                            className="w-full rounded-xl border border-white/10 bg-black/40 px-4 py-3 text-base text-white outline-none focus:border-yellow-400/60"
+                             placeholder="Plate"
+                           />
+                         </label>
+@@ -2985,9 +3030,14 @@
+                             <div>
+                               <div className="text-xs text-white/60 mb-1">Customer name</div>
+                               <input
++                                id={insId("dtpFullName")}
++                                name="dtpFullName"
++                                type="text"
++                                autoComplete="name"
++                                inputMode="text"
+                                 value={dtpForm.fullName}
+                                 onChange={(e) => setDtpForm((p) => ({ ...p, fullName: e.target.value }))}
+-                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
++                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-base text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                 placeholder="Full name"
+                               />
+                             </div>
+@@ -2995,9 +3045,14 @@
+                             <div>
+                               <div className="text-xs text-white/60 mb-1">Insurance company</div>
+                               <input
++                                id={insId("dtpInsurer")}
++                                name="dtpInsurer"
++                                type="text"
++                                autoComplete="organization"
++                                inputMode="text"
+                                 value={dtpForm.insurerName}
+                                 onChange={(e) => setDtpForm((p) => ({ ...p, insurerName: e.target.value }))}
+-                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
++                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-base text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                 placeholder="Company name"
+                               />
+                             </div>
+@@ -3005,9 +3060,14 @@
+                             <div>
+                               <div className="text-xs text-white/60 mb-1">Vehicle year</div>
+                               <input
++                                id={insId("dtpYear")}
++                                name="dtpYear"
++                                type="text"
++                                autoComplete="off"
++                                inputMode="numeric"
+                                 value={dtpForm.year}
+                                 onChange={(e) => setDtpForm((p) => ({ ...p, year: e.target.value }))}
+-                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
++                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-base text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                 placeholder="YYYY"
+                               />
+                             </div>
+@@ -3015,9 +3075,14 @@
+                             <div>
+                               <div className="text-xs text-white/60 mb-1">Vehicle make</div>
+                               <input
++                                id={insId("dtpMake")}
++                                name="dtpMake"
++                                type="text"
++                                autoComplete="off"
++                                inputMode="text"
+                                 value={dtpForm.make}
+                                 onChange={(e) => setDtpForm((p) => ({ ...p, make: e.target.value }))}
+-                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
++                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-base text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                 placeholder="Make"
+                               />
+                             </div>
+@@ -3025,9 +3090,14 @@
+                             <div className="sm:col-span-2">
+                               <div className="text-xs text-white/60 mb-1">Vehicle model</div>
+                               <input
++                                id={insId("dtpModel")}
++                                name="dtpModel"
++                                type="text"
++                                autoComplete="off"
++                                inputMode="text"
+                                 value={dtpForm.model}
+                                 onChange={(e) => setDtpForm((p) => ({ ...p, model: e.target.value }))}
+-                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
++                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-base text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                 placeholder="Model"
+                               />
+                             </div>
+@@ -3035,9 +3105,14 @@
+                             <div className="sm:col-span-2">
+                               <div className="text-xs text-white/60 mb-1">Claim # (optional)</div>
+                               <input
++                                id={insId("dtpClaim")}
++                                name="dtpClaim"
++                                type="text"
++                                autoComplete="off"
++                                inputMode="text"
+                                 value={dtpForm.claimNumber}
+                                 onChange={(e) => setDtpForm((p) => ({ ...p, claimNumber: e.target.value }))}
+-                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-sm text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
++                                className="w-full rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-base text-white placeholder:text-white/30 focus:outline-none focus:ring-2 focus:ring-yellow-400/30"
+                                 placeholder="Claim number"
+                               />
+                             </div>

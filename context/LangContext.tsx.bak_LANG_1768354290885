@@ -1,0 +1,53 @@
+"use client";
+
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+
+export type Lang = "en" | "es";
+
+type LangCtx = {
+  lang: Lang;
+  setLang: (l: Lang) => void;
+  tr: (en: string, es: string) => string;
+};
+
+const LangContext = createContext<LangCtx | undefined>(undefined);
+
+const STORAGE_KEY = "uab_lang";
+
+export function LangProvider({ children }: { children: ReactNode }) {
+  const [lang, setLang] = useState<Lang>("en");
+
+  // Load saved language once
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(STORAGE_KEY);
+      if (saved === "en" || saved === "es") setLang(saved);
+    } catch {}
+  }, []);
+
+  // Persist + set <html lang="">
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, lang);
+    } catch {}
+    try {
+      document.documentElement.lang = lang;
+    } catch {}
+  }, [lang]);
+
+  const tr = useMemo(() => {
+    return (en: string, es: string) => (lang === "es" ? es : en);
+  }, [lang]);
+
+  return (
+    <LangContext.Provider value={{ lang, setLang, tr }}>
+      {children}
+    </LangContext.Provider>
+  );
+}
+
+export function useLang() {
+  const ctx = useContext(LangContext);
+  if (!ctx) throw new Error("useLang must be used inside LangProvider");
+  return ctx;
+}

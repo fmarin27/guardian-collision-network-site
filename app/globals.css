@@ -1,0 +1,265 @@
+@import "tailwindcss";
+
+/* Root color variables */
+:root {
+  --background: #05070b;
+  --foreground: #f9fafb;
+  --guardian-accent: #cbd5e1;
+  --guardian-accent-strong: #e2e8f0;
+  --guardian-glow: rgba(148, 163, 184, 0.2);
+}
+
+/* Dark mode variables */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #05070b;
+    --foreground: #f9fafb;
+    --guardian-accent: #cbd5e1;
+    --guardian-accent-strong: #e2e8f0;
+    --guardian-glow: rgba(148, 163, 184, 0.2);
+  }
+}
+
+/* Global body styling */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+  overflow-x: hidden;
+  position: relative;
+
+  /* Guardian look: darker national / advocacy feel */
+  background:
+    radial-gradient(circle at top, rgba(30, 41, 59, 0.35), transparent 38%),
+    linear-gradient(180deg, #05070b 0%, #0a1018 48%, #05070b 100%);
+}
+
+/* Soft overlay / depth */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(0, 0, 0, 0.35) 0%,
+      rgba(0, 0, 0, 0.12) 35%,
+      rgba(0, 0, 0, 0.5) 100%
+    );
+  z-index: -1;
+}
+
+/* Optional subtle texture layer */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.06;
+  z-index: -1;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+  background-size: 24px 24px, 24px 24px;
+}
+
+/* =========================
+   COCKPIT WRAPPERS
+   ========================= */
+
+.cockpit-wrapper {
+  position: relative;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.cockpit-frame {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* =========================
+   COCKPIT (BMW-style cluster)
+   ========================= */
+
+.cockpit {
+  position: relative;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* The PNG frame sits on top */
+.cockpit__frame {
+  width: 100%;
+  height: auto;
+  display: block;
+  position: relative;
+  z-index: 2;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* The center "screen" (video area) */
+.cockpit__screen {
+  position: absolute;
+  z-index: 1;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 46%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 12px 40px rgba(0, 0, 0, 0.55);
+}
+
+/* Placeholder content inside the screen */
+.cockpit__screenInner {
+  height: 100%;
+  width: 100%;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  gap: 10px;
+  color: rgba(255, 255, 255, 0.85);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+}
+
+.cockpit__screenTag {
+  display: inline-block;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.cockpit__screenText {
+  font-size: 16px;
+  opacity: 0.9;
+}
+
+/* =============================
+   COCKPIT TEXT — GLOBAL STYLES
+   ============================= */
+
+.cockpitLeft,
+.cockpitRight {
+  font-size: 17px;
+  line-height: 1.45;
+  color: #ffffff;
+}
+
+.cockpitKicker {
+  font-size: 15px;
+  letter-spacing: 0.18em;
+  opacity: 0.85;
+  margin-bottom: 8px;
+}
+
+.cockpitSubhead {
+  font-size: 18px;
+  letter-spacing: 0.12em;
+  margin-bottom: 12px;
+}
+
+.cockpitLeft ul,
+.cockpitRight ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.cockpitLeft li,
+.cockpitRight li {
+  margin-bottom: 10px;
+}
+
+/* Left / right panel positioning */
+.cockpitLeft {
+  transform: translateX(32px);
+}
+
+.cockpitRight {
+  transform: translateX(-88px);
+}
+
+/* =============================
+   VIDEO MODULE
+   ============================= */
+
+.videoShell {
+  width: min(760px, 62vw);
+  padding: 18px;
+  border-radius: 22px;
+  margin: 0 auto;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.03),
+    rgba(255, 255, 255, 0.015)
+  );
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 0 26px var(--guardian-glow);
+}
+
+.videoBox {
+  height: 220px;
+  border-radius: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+/* =============================
+   RESPONSIVE TWEAKS
+   ============================= */
+
+@media (max-width: 1100px) {
+  .cockpitRight {
+    transform: translateX(-72px);
+  }
+}
+
+@media (max-width: 900px) {
+  .cockpit {
+    max-width: 900px;
+  }
+
+  .cockpit__screen {
+    width: 54%;
+  }
+
+  .cockpitRight {
+    transform: translateX(-56px);
+  }
+
+  .videoShell {
+    width: min(680px, 88vw);
+  }
+
+  .videoBox {
+    height: 200px;
+  }
+}
+
+@media (max-width: 640px) {
+  .cockpit__screen {
+    width: 72%;
+  }
+}
