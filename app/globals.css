@@ -4,9 +4,9 @@
 :root {
   --background: #05070b;
   --foreground: #f9fafb;
-  --guardian-accent: #cbd5e1;
-  --guardian-accent-strong: #e2e8f0;
-  --guardian-glow: rgba(148, 163, 184, 0.2);
+  --guardian-accent: #7dd3fc;
+  --guardian-accent-strong: #dbeafe;
+  --guardian-glow: rgba(56, 189, 248, 0.24);
 }
 
 /* Dark mode variables */
@@ -14,9 +14,9 @@
   :root {
     --background: #05070b;
     --foreground: #f9fafb;
-    --guardian-accent: #cbd5e1;
-    --guardian-accent-strong: #e2e8f0;
-    --guardian-glow: rgba(148, 163, 184, 0.2);
+    --guardian-accent: #7dd3fc;
+    --guardian-accent-strong: #dbeafe;
+    --guardian-glow: rgba(56, 189, 248, 0.24);
   }
 }
 
@@ -37,8 +37,9 @@ body {
 
   /* Guardian look: darker national / advocacy feel */
   background:
-    radial-gradient(circle at top, rgba(30, 41, 59, 0.35), transparent 38%),
-    linear-gradient(180deg, #05070b 0%, #0a1018 48%, #05070b 100%);
+    radial-gradient(circle at top, rgba(14, 116, 144, 0.28), transparent 34%),
+    radial-gradient(circle at 50% 22%, rgba(30, 64, 175, 0.16), transparent 28%),
+    linear-gradient(180deg, #020617 0%, #08111f 48%, #020617 100%);
 }
 
 /* Soft overlay / depth */
@@ -66,8 +67,8 @@ body::after {
   opacity: 0.06;
   z-index: -1;
   background-image:
-    linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+    linear-gradient(rgba(125,211,252,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(96,165,250,0.026) 1px, transparent 1px);
   background-size: 24px 24px, 24px 24px;
 }
 
