@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
           code: err.code,
           subcode: err.subcode,
         },
-        { status: err.status || 500 }
+        { status: 500 }
       );
     }
 

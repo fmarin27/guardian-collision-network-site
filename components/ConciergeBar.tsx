@@ -266,7 +266,7 @@ function formatPhone(digits: string) {
 }
 
 
-function normalizeUploadKind(kind: unknown): "police" | "photos" | "other_insurance" | "own_insurance" | "unknown" {
+function normalizeUploadKind(kind: unknown): "police" | "photos" | "other_insurance" | "own_insurance" | "unknown" | "vin" {
   const v = String(kind || "").trim().toLowerCase();
   if (v === "police") return "police";
   if (v === "photos") return "photos";
@@ -682,7 +682,7 @@ if (boot.sessionId && isValidSessionId(String(boot.sessionId))) {
 
   
   // ✅ When entering / advancing forms, scroll to the top of the active form panel (mobile-friendly)
-  function scrollToRefTop(ref: React.RefObject<HTMLDivElement>) {
+  function scrollToRefTop(ref: React.RefObject<HTMLDivElement | null>) {
     requestAnimationFrame(() => {
       setTimeout(() => {
         ref.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -3766,7 +3766,7 @@ case "accident_shopRep":
                   />
                   <button
                     type="button"
-                    onClick={send}
+                    onClick={() => send()}
                     disabled={inputDisabled}
                     className="rounded-xl border border-sky-400/50 bg-sky-400/10 px-4 py-3 text-sm font-medium text-sky-200 hover:bg-sky-400/15 disabled:opacity-40"
                   >

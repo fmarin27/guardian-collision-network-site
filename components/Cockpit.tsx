@@ -12,38 +12,38 @@ const MANAGER_PHONE = process.env.NEXT_PUBLIC_MANAGER_PHONE || "";
 
 // ========================
 // Session alignment (IMPORTANT)
-// Cockpit now uses the SAME session ID as ConciergeBar (gcn_concierge_session_id),
+// Cockpit now uses the SAME session ID as ConciergeBar (uab_concierge_session_id),
 // so handoffs + Firestore + notify all stay in one universe.
 // ========================
-const SID_KEY = "gcn_concierge_session_id";
+const SID_KEY = "uab_concierge_session_id";
 
-function randomGcnCode(len = 4) {
+function randomUabCode(len = 4) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let out = "";
   for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
   return out;
 }
 
-function newGcnSessionId() {
-  return `GCN-${randomGcnCode(4)}`;
+function newUabSessionId() {
+  return `UAB-${randomUabCode(4)}`;
 }
 
-function getOrCreateGcnSessionId() {
-  if (typeof window === "undefined") return newGcnSessionId();
+function getOrCreateUabSessionId() {
+  if (typeof window === "undefined") return newUabSessionId();
   const existing = window.localStorage.getItem(SID_KEY);
-  if (existing && /^GCN-[A-Z0-9]{4,}$/i.test(existing)) return existing.toUpperCase();
-  const sid = newGcnSessionId();
+  if (existing && /^UAB-[A-Z0-9]{4,}$/i.test(existing)) return existing.toUpperCase();
+  const sid = newUabSessionId();
   window.localStorage.setItem(SID_KEY, sid);
   return sid;
 }
 
-function createFreshGcnSessionId() {
-  const sid = newGcnSessionId();
+function createFreshUabSessionId() {
+  const sid = newUabSessionId();
   if (typeof window !== "undefined") {
     window.localStorage.setItem(SID_KEY, sid);
     try {
       window.localStorage.removeItem(BOOT_KEY);
-      window.localStorage.removeItem("gcn_cockpit_upload_status");
+      window.localStorage.removeItem("uab_cockpit_upload_status");
     } catch {}
   }
   return sid;
@@ -140,22 +140,15 @@ function cockpitUiText(lang: Lang, text: string) {
     "Was your vehicle safe to drive, towed away, or not sure?": "¿Su vehículo era seguro para conducir, fue remolcado o no está seguro?",
     "It’s safe to drive": "Se puede conducir",
     "It was towed": "Fue remolcado",
-    "Tow details": "Detalles del remolque",
     "If your vehicle was towed, do you know who towed it?": "Si su vehículo fue remolcado, ¿sabe quién lo remolcó?",
     "Name and phone number are helpful. Address if you have it.": "Nombre y teléfono ayudan. Dirección también, si la tiene.",
-    "Safety check": "Revisión de seguridad",
     "Since you are not sure whether the vehicle is safe to drive, we just need a couple quick questions.": "Como no está seguro de si el vehículo se puede conducir, solo necesitamos un par de preguntas rápidas.",
     "Are you still at the scene of the accident?": "¿Todavía está en la escena del accidente?",
-    "Call right away": "Llamar de inmediato",
     "Please give us the best number to reach you right now.": "Indíquenos el mejor número para comunicarnos con usted ahora mismo.",
     "A Guardian representative will call you as soon as possible.": "Un representante de Guardian le llamará lo antes posible.",
-    "Vehicle movement": "Movimiento del vehículo",
     "Were you able to drive away from the accident?": "¿Pudo conducir el vehículo después del accidente?",
-    "Quick safety check": "Revisión rápida de seguridad",
-    "Vehicle location": "Ubicación del vehículo",
     "Where is the vehicle now?": "¿Dónde está el vehículo ahora?",
     "If you know the tow yard, shop, street, or parking lot, add it here.": "Si sabe el depósito, taller, calle o estacionamiento, escríbalo aquí.",
-    "Next question": "Siguiente pregunta",
     "Did you exchange insurance information?": "¿Intercambiaron información del seguro?",
     "Do you have your own insurance information available?": "¿Tiene disponible la información de su propio seguro?",
     "Do you have photos of the vehicles / damage?": "¿Tiene fotos de los vehículos o los daños?",
@@ -186,15 +179,8 @@ function cockpitUiText(lang: Lang, text: string) {
     "Designated rep:": "Representante designado:",
     "Close": "Cerrar",
     "Guardian call": "Llamada de Guardian",
-    "Connect with Guardian": "Conectarse con Guardian",
-    "I was in an accident": "Tuve un accidente",
-    "I need help with vehicle damage": "Necesito ayuda con daños del vehículo",
-    "Collision Claims & Insurance Education": "Educación sobre reclamos y seguros de colisión",
     "Need claim guidance?": "¿Necesita orientación sobre su reclamo?",
     "Need help deciding how to handle the damage?": "¿Necesita ayuda para decidir cómo manejar el daño?",
-    "A Guardian representative will call you as soon as possible.": "Un representante de Guardian le llamará lo antes posible.",
-    "Would you like Guardian to act as your Designated Representative and help guide your insurance claim?": "¿Quiere que Guardian actúe como su representante designado y le ayude con su reclamo de seguro?",
-    "For now, here’s what Guardian saved:": "Por ahora, esto es lo que Guardian guardó:",
   };
   if (text in map) return map[text];
   return text
@@ -269,7 +255,7 @@ type EducationTopic =
   | "Appraisal clause"
   | "Designated representative";
 
-type EducationStep = "topics" | "detail" | "ask" | "name" | "phone" | "done";
+type EducationStep = "intro" | "topics" | "question" | "contact" | "done";
 
 type ConciergeStep = "name" | "method" | "phone" | "done";
 
@@ -313,9 +299,9 @@ type IntakeState = {
   updatedAt: string;
 };
 
-const STORAGE_KEY = "gcn_cockpit_intake_v1";
+const STORAGE_KEY = "uab_cockpit_intake_v1";
 
-const BOOT_KEY = "gcn_concierge_boot";
+const BOOT_KEY = "uab_concierge_boot";
 
 function setConciergeBoot(sessionId: string, kind: "police" | "photos" | "vin") {
   if (typeof window === "undefined") return;
@@ -430,7 +416,7 @@ export default function Cockpit() {
     const saved = safeJsonParse<IntakeState>(localStorage.getItem(STORAGE_KEY));
 
     // ✅ Use the same session ID as ConciergeBar.
-    const nextSessionId = getOrCreateGcnSessionId();
+    const nextSessionId = getOrCreateUabSessionId();
     setSessionId(nextSessionId);
 
     setSelectedOption(saved?.selectedOption ?? null);
@@ -614,7 +600,7 @@ export default function Cockpit() {
   }
 
   function beginTopLevelFlow(nextOption: number) {
-    const nextSessionId = createFreshGcnSessionId();
+    const nextSessionId = createFreshUabSessionId();
     setSessionId(nextSessionId);
     setSelectedOption(nextOption);
     setAccidentStep("scenario");
@@ -630,7 +616,7 @@ export default function Cockpit() {
 
   function resetOption1() {
     pinOption1();
-    const nextSessionId = createFreshGcnSessionId();
+    const nextSessionId = createFreshUabSessionId();
     setSessionId(nextSessionId);
     setAccidentStep("scenario");
     setAccidentScenario(null);
@@ -660,21 +646,21 @@ export default function Cockpit() {
 
   function resetOption2() {
     pinOption2();
-    const nextSessionId = createFreshGcnSessionId();
+    const nextSessionId = createFreshUabSessionId();
     setSessionId(nextSessionId);
     resetOption2State(true);
   }
 
   function resetOption3() {
     pinOption3();
-    const nextSessionId = createFreshGcnSessionId();
+    const nextSessionId = createFreshUabSessionId();
     setSessionId(nextSessionId);
     resetOption3State(true);
   }
 
   function resetOption4() {
     pinOption4();
-    const nextSessionId = createFreshGcnSessionId();
+    const nextSessionId = createFreshUabSessionId();
     setSessionId(nextSessionId);
     resetEducationFlow(true);
   }
@@ -866,7 +852,7 @@ function answerDesignatedRep(v: YesNoNotSure) {
     setUploadKind("vin");
     try {
       localStorage.setItem(
-        "gcn_concierge_boot",
+        "uab_concierge_boot",
         JSON.stringify({ mode: "upload", kind: "vin", sessionId })
       );
     } catch {}
@@ -1449,7 +1435,7 @@ if (accidentStep === "policeUpload") {
       onClick: () => {
         try {
           localStorage.setItem(
-            "gcn_concierge_boot",
+            "uab_concierge_boot",
             JSON.stringify({ mode: "upload", kind: isPolice ? "police" : "photos", sessionId })
           );
         } catch {}
@@ -1531,7 +1517,7 @@ if (accidentStep === "fullCoverage") {
           {
             label: "Continue to estimate (photos + details)",
             onClick: () => {
-              const nextSessionId = createFreshGcnSessionId();
+              const nextSessionId = createFreshUabSessionId();
               setSessionId(nextSessionId);
               window.dispatchEvent(
                 new CustomEvent("concierge:open", {
@@ -1965,17 +1951,17 @@ if (activeSideOption === 4) {
         label: topic,
         onClick: () => {
           setEducationTopic(topic);
-          setEducationStep("topic");
+          setEducationStep("topics");
           setEducationQuestion("");
           setEducationError(null);
         },
-        selected: educationTopic === topic && educationStep === "topic",
+        selected: educationTopic === topic && educationStep === "topics",
       })),
       { label: "Back", onClick: () => setSelectedOption(null), variant: "alt" as const },
     ];
   }
 
-  if (educationStep === "topic") {
+  if (educationStep === "topics") {
     leftTitleText = educationTopic || "Educational information";
     leftPanelLines = educationTopic ? educationSummaries[educationTopic] : ["Choose a topic to continue."];
     rightTitleText = "Actions";
@@ -2004,7 +1990,7 @@ if (activeSideOption === 4) {
     rightPanelLines = [];
     rightChoices = [
       { label: educationBusy ? "Sending..." : "Submit", onClick: submitEducationQuestion },
-      { label: "Back", onClick: () => setEducationStep("topic"), variant: "alt" as const },
+      { label: "Back", onClick: () => setEducationStep("topics"), variant: "alt" as const },
     ];
     rightCustom = (
       <div className="mt-3 space-y-2">
@@ -2114,7 +2100,7 @@ if (activeSideOption === 4) {
                   <div className="mt-3 text-[15px] leading-snug text-white/90">
                     {leftChoices ? (
                       <div className="space-y-1">
-                        {translatedLeftChoices.map((c) => {
+                        {(translatedLeftChoices ?? []).map((c) => {
                           const isSelected = !!c.selected;
                           const cls =
                             c.variant === "alt"
@@ -2147,7 +2133,7 @@ if (activeSideOption === 4) {
                   <div className="mt-3 text-[15px] leading-snug text-white/90">
                     {rightChoices ? (
                       <div className="space-y-1">
-                        {translatedRightChoices.map((c) => {
+                        {(translatedRightChoices ?? []).map((c) => {
                           const isSelected = !!c.selected;
                           const cls =
                             c.variant === "alt"
@@ -2243,7 +2229,7 @@ if (activeSideOption === 4) {
                       </div>
                     ) : translatedLeftChoices ? (
                       <div className="space-y-0.5">
-                        {translatedLeftChoices.map((c) => {
+                        {(translatedLeftChoices ?? []).map((c) => {
                           const isSelected = !!c.selected;
                           const cls =
                             c.variant === "alt"
@@ -2294,7 +2280,7 @@ if (activeSideOption === 4) {
                       </div>
                     ) : translatedRightChoices ? (
                       <div className="space-y-0.5">
-                        {translatedRightChoices.map((c) => {
+                        {(translatedRightChoices ?? []).map((c) => {
                           const isSelected = !!c.selected;
                           const cls =
                             c.variant === "alt"
