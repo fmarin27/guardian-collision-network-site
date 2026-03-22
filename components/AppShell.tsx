@@ -199,6 +199,33 @@ export default function AppShell({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const openConciergeFromUrl = useCallback(() => {
+    const { searchParams, hash } = new URL(window.location.href);
+    const open = searchParams.get("open")?.toLowerCase();
+    const normalizedHash = hash.replace(/^#/, "").toLowerCase();
+
+    let detail: ConciergeOpenDetail | null = null;
+
+    if (open === "estimate" || normalizedHash === "estimate") {
+      detail = { mode: "default", intent: "estimate", source: "other" };
+    } else if (open === "forms" || normalizedHash === "forms") {
+      detail = { mode: "forms", source: "other" };
+    } else if (
+      open === "concierge" ||
+      open === "help" ||
+      normalizedHash === "concierge" ||
+      normalizedHash === "help"
+    ) {
+      detail = { mode: "default", source: "other" };
+    }
+
+    if (!detail) return;
+
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent("concierge:open", { detail }));
+    }, 0);
+  }, []);
+
   const [transition, setTransition] = useState<{
     show: boolean;
     top: number;
@@ -370,6 +397,19 @@ export default function AppShell({ children }: { children: ReactNode }) {
       clearAnimTimeout();
     };
   }, [runTransition, clearAnimTimeout]);
+
+  useEffect(() => {
+    openConciergeFromUrl();
+
+    const handleUrlOpen = () => openConciergeFromUrl();
+
+    window.addEventListener("hashchange", handleUrlOpen);
+    window.addEventListener("popstate", handleUrlOpen);
+    return () => {
+      window.removeEventListener("hashchange", handleUrlOpen);
+      window.removeEventListener("popstate", handleUrlOpen);
+    };
+  }, [openConciergeFromUrl]);
 
   return (
     <LangProvider>
